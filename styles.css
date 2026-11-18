@@ -103,3 +103,4 @@ dialog label { display: block; font-size: .82rem; color: var(--muted); margin-bo
 .eq { display: inline-flex; align-items: center; gap: .4rem; font-size: .82rem; color: var(--muted); margin-left: .8rem; cursor: pointer; }
 .eq input, .toolbar .eq input { width: auto; flex: none; margin: 0; }
 .num .places { text-align: right; }
+#defMin { width: 4.5rem; padding: .2rem .4rem; margin: 0 .2rem; }

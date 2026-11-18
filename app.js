@@ -14,6 +14,8 @@ const nameMap = new Map();   // base id -> nombre en español
 const enMap = new Map();     // base id -> nombre en inglés (para buscar)
 const LS_EQUIV = "albion-stock:equiv";
 let useEquiv = true;         // contar equivalentes (6.3 = 7.2 = 8.1)
+const LS_DEFMIN = "albion-stock:defmin";
+let defaultMin = 8;          // faltante si hay menos de N unidades (items sin mínimo propio)
 let currentUid = null;
 let memberships = [];        // [{ guild_id, role, display_name, guilds: {id, name, invite_code} }]
 let guild = null;            // membresía activa
@@ -80,6 +82,9 @@ async function init() {
     console.error("No se pudo cargar el catálogo de items:", err);
   }
   useEquiv = lsGet(LS_EQUIV) !== "0";
+  const savedMin = parseInt(lsGet(LS_DEFMIN), 10);
+  if (Number.isInteger(savedMin) && savedMin >= 0) defaultMin = savedMin;
+  $("#defMin").value = defaultMin;
   $("#eqInv").checked = $("#eqDash").checked = useEquiv;
   // setTimeout evita llamar a supabase dentro del callback (riesgo de bloqueo en supabase-js)
   supabase.auth.onAuthStateChange((event, session) => {
@@ -259,7 +264,11 @@ function aggregate() {
   }
   for (const id of minMap.keys()) if (!map.has(id)) map.set(id, { item_id: id, total: 0, places: [] });
   const entries = [...map.values()].map((e) => ({
-    ...e, min: minMap.get(e.item_id) ?? 0, name: itemName(e.item_id), key: equivKey(e.item_id),
+    ...e,
+    // Mínimo propio si existe (0 = sin mínimo); si no, el mínimo por defecto
+    min: minMap.has(e.item_id) ? minMap.get(e.item_id) : defaultMin,
+    minOwn: minMap.has(e.item_id),
+    name: itemName(e.item_id), key: equivKey(e.item_id),
   }));
 
   // Equivalencias: stock efectivo = suma de todos los items equivalentes (mismo tipo y misma suma tier + encanto)
@@ -311,7 +320,7 @@ function renderStock() {
       <td>${esc(e.name)}</td>
       <td><span class="tier">${esc(tierOf(e.item_id))}</span></td>
       <td class="num"><strong>${e.total}</strong>${e.eff !== e.total ? `<span class="places">equiv. ${e.eff}</span>` : ""}</td>
-      <td class="num">${e.min}</td>
+      <td class="num" ${e.minOwn ? "" : `title="Mínimo por defecto"`}>${e.min}${e.minOwn ? "" : "*"}</td>
       <td><span class="badge ${k}">${STATUS_LABEL[k]}</span></td>
       <td><span class="places">${esc(placesTxt)}</span>${equivTxt ? `<span class="places">${esc(equivTxt)}</span>` : ""}</td>
       <td class="actions">${canEdit() ? `<button class="btn sm" data-id="${esc(e.item_id)}">Mover</button>` : ""}</td></tr>`;
@@ -389,6 +398,15 @@ async function renderDashboard() {
 }
 $("#period").addEventListener("change", renderDashboard);
 
+// Mínimo por defecto: items sin mínimo propio aparecen como faltantes bajo este valor (0 = desactivado)
+$("#defMin").addEventListener("change", (e) => {
+  const v = Math.max(0, Math.min(99999, parseInt(e.target.value, 10) || 0));
+  defaultMin = v;
+  e.target.value = v;
+  lsSet(LS_DEFMIN, String(v));
+  if (guild) { renderStock(); renderDashboard(); }
+});
+
 // Contar equivalentes (6.3 = 7.2 = 8.1): un solo estado, dos casillas sincronizadas
 function setEquiv(value) {
   useEquiv = value;
@@ -455,7 +473,7 @@ function openMoveDialog(entry) {
     const cat = catalog.find((c) => c[0] === base);
     setPicked(base, nameMap.get(base) || base, Boolean(cat?.[2]) || Boolean(ench), Number(ench || 0));
     $("#pickSearch").value = entry.name;
-    $("#mMin").value = entry.min || "";
+    $("#mMin").value = entry.minOwn ? entry.min : "";
     $("#mPlace").value = entry.places[0]?.place || "";
   }
   $("#dlgMove").showModal();
