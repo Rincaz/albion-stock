@@ -134,6 +134,8 @@ async function enter(session) {
   if (loadedUid === uid && (!$("#viewApp").hidden || !$("#viewSetup").hidden)) return; // ya cargado
   entering = true;
   try {
+    const { error: claimErr } = await supabase.rpc("claim_pending_membership");
+    if (claimErr) console.error("claim_pending_membership:", claimErr);
     await loadMemberships(uid);
     loadedUid = uid;
   } catch (err) {
@@ -172,6 +174,8 @@ function renderHeader() {
   $("#btnMove").hidden = !canEdit();
   $("#uploadCard").hidden = !canEdit();
   $("#btnWipe").hidden = !canEdit();
+  $("#tabMiembros").hidden = guild.role !== "admin";
+  if (guild.role !== "admin" && !$("#tab-miembros").hidden) document.querySelector('.tab[data-tab="dashboard"]').click();
 }
 
 $("#guildSelect").addEventListener("change", (e) => {
@@ -534,7 +538,8 @@ $("#eqDash").addEventListener("change", (e) => setEquiv(e.target.checked));
 
 document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
-  ["dashboard", "inventario", "subidas", "movimientos"].forEach((n) => ($(`#tab-${n}`).hidden = n !== tab.dataset.tab));
+  ["dashboard", "inventario", "subidas", "movimientos", "miembros"].forEach((n) => ($(`#tab-${n}`).hidden = n !== tab.dataset.tab));
+  if (tab.dataset.tab === "miembros") loadMembers();
 }));
 
 // ---------- Diálogo de movimiento ----------
@@ -809,3 +814,87 @@ $("#btnWipe").addEventListener("click", async () => {
 });
 
 init();
+
+// ---------- Panel de miembros (solo admin) ----------
+const ROLE_LABEL = { admin: "Admin", editor: "Editor", viewer: "Solo lectura" };
+const roleOptions = (sel) => Object.entries(ROLE_LABEL).map(([v, l]) => `<option value="${v}" ${v === sel ? "selected" : ""}>${l}</option>`).join("");
+
+async function loadMembers() {
+  if (guild.role !== "admin") return;
+  const { data, error } = await supabase.rpc("admin_list_members", { p_guild: guild.guild_id });
+  if (error) {
+    console.error("admin_list_members:", error);
+    $("#tbodyMembers").innerHTML = `<tr><td colspan="4" class="form-error">${esc(error.message)}</td></tr>`;
+    return;
+  }
+  $("#tbodyMembers").innerHTML = data.members.map((m) => `<tr>
+    <td>${esc(m.display_name || "Sin nombre")}${m.is_self ? ' <span class="tier">tú</span>' : ""}</td>
+    <td>${esc(m.email || "—")}</td>
+    <td>${m.is_self ? ROLE_LABEL[m.role] : `<select data-role-for="${esc(m.user_id)}">${roleOptions(m.role)}</select>`}</td>
+    <td>${m.is_self ? "" : `<button class="btn" data-remove="${esc(m.user_id)}" data-name="${esc(m.display_name || m.email)}">Quitar</button>`}</td></tr>`).join("");
+  $("#pendingList").innerHTML = data.pending.length
+    ? data.pending.map((p) => `<li>${esc(p.display_name || "Sin nombre")} · ${esc(p.email)} · ${ROLE_LABEL[p.role]} ` +
+        `<button class="btn" data-cancel="${esc(p.email)}">Cancelar</button></li>`).join("")
+    : '<li class="hint">Sin invitaciones pendientes.</li>';
+}
+
+$("#formAddMember").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("#amError"), ok = $("#amOk"), btn = $("#amSubmit");
+  err.hidden = ok.hidden = true;
+  btn.disabled = true;
+  try {
+    const { data, error } = await supabase.rpc("admin_add_member", {
+      p_guild: guild.guild_id, p_email: $("#amEmail").value, p_display: $("#amName").value, p_role: $("#amRole").value,
+    });
+    if (error) throw error;
+    ok.textContent = data === "added" ? "Agregado al gremio." : "Invitación guardada: se unirá cuando se registre con ese correo.";
+    ok.hidden = false;
+    $("#formAddMember").reset();
+    await loadMembers();
+  } catch (ex) {
+    console.error(ex);
+    err.textContent = ex.message || String(ex);
+    err.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#tab-miembros").addEventListener("change", async (e) => {
+  const uid = e.target.dataset.roleFor;
+  if (!uid) return;
+  const { error } = await supabase.from("guild_members").update({ role: e.target.value })
+    .eq("guild_id", guild.guild_id).eq("user_id", uid);
+  if (error) { console.error(error); alert(error.message); }
+  loadMembers();
+});
+
+$("#tab-miembros").addEventListener("click", async (e) => {
+  const rm = e.target.closest("[data-remove]");
+  const cancel = e.target.closest("[data-cancel]");
+  try {
+    if (rm) {
+      if (!confirm(`¿Quitar a ${rm.dataset.name} del gremio?`)) return;
+      const { error } = await supabase.from("guild_members").delete()
+        .eq("guild_id", guild.guild_id).eq("user_id", rm.dataset.remove);
+      if (error) throw error;
+      await loadMembers();
+    } else if (cancel) {
+      const { error } = await supabase.rpc("admin_remove_pending", { p_guild: guild.guild_id, p_email: cancel.dataset.cancel });
+      if (error) throw error;
+      await loadMembers();
+    }
+  } catch (ex) {
+    console.error(ex);
+    alert(ex.message || ex);
+  }
+});
+
+$("#btnRotate").addEventListener("click", async () => {
+  if (!confirm("El código anterior dejará de funcionar. ¿Generar uno nuevo?")) return;
+  const { data, error } = await supabase.rpc("rotate_invite", { p_guild: guild.guild_id });
+  if (error) { console.error(error); return alert(error.message); }
+  guild.guilds.invite_code = data;
+  renderHeader();
+});

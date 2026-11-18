@@ -64,6 +64,7 @@
         <button class="tab" data-tab="inventario">Inventario</button>
         <button class="tab" data-tab="subidas">Subir log</button>
         <button class="tab" data-tab="movimientos">Movimientos</button>
+        <button class="tab" data-tab="miembros" id="tabMiembros" hidden>Miembros</button>
       </nav>
 
       <div id="wipeBanner" class="banner" hidden></div>
@@ -165,6 +166,42 @@
             <tbody id="tbodyMoves"></tbody>
           </table>
           <p class="empty" id="emptyMoves" hidden>Aún no hay movimientos.</p>
+        </div>
+      </section>
+      <section id="tab-miembros" hidden>
+        <div class="card">
+          <h2>Agregar miembro</h2>
+          <p class="hint">Si el correo ya tiene cuenta entra al gremio al instante. Si no, queda pendiente y se une solo cuando se registre e inicie sesión con ese correo.</p>
+          <form id="formAddMember" class="row2">
+            <label>Correo <input type="email" id="amEmail" required maxlength="200" autocomplete="off" /></label>
+            <label>Nombre en el gremio <input id="amName" maxlength="40" placeholder="Ej: shankgos" autocomplete="off" /></label>
+            <label>Rol
+              <select id="amRole">
+                <option value="editor">Editor (sube y mueve stock)</option>
+                <option value="viewer">Solo lectura</option>
+                <option value="admin">Admin</option>
+              </select>
+            </label>
+            <div class="dlg-actions"><button class="btn primary" id="amSubmit">Agregar</button></div>
+          </form>
+          <p class="form-error" id="amError" hidden></p>
+          <p class="lg-ok" id="amOk" hidden></p>
+        </div>
+        <div class="card">
+          <h2>Miembros del gremio</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Nombre</th><th>Correo</th><th>Rol</th><th></th></tr></thead>
+              <tbody id="tbodyMembers"></tbody>
+            </table>
+          </div>
+          <h3>Invitaciones pendientes</h3>
+          <ul class="lg-list" id="pendingList"></ul>
+        </div>
+        <div class="card">
+          <h2>Código de invitación</h2>
+          <p class="hint">Quien tenga el código puede unirse como solo lectura. Si se filtró, genera uno nuevo.</p>
+          <div class="dlg-actions"><button class="btn" id="btnRotate">Generar código nuevo</button></div>
         </div>
       </section>
     </main>
