@@ -367,58 +367,84 @@ $("#tbodyStock").addEventListener("click", (e) => {
 });
 
 // ---------- Dashboard ----------
+/** Con equivalencias activas, los items equivalentes cuentan como uno solo (mismo grupo). */
+const groupKeyOf = (id) => (useEquiv && equivKey(id)) || id;
+
 async function renderDashboard() {
   const items = aggregate();
   const units = items.reduce((a, e) => a + e.total, 0);
-  const low = items.filter((e) => statusOf(e) === "low").length;
-  const out = items.filter((e) => statusOf(e) === "out").length;
+  // KPIs por grupo de equivalencia (el stock efectivo ya es el mismo para todo el grupo)
+  const kpiGroups = new Map();
+  for (const e of items) {
+    const g = kpiGroups.get(groupKeyOf(e.item_id));
+    kpiGroups.set(groupKeyOf(e.item_id), g ? { ...g, min: Math.max(g.min, e.min) } : e);
+  }
+  const groupsList = [...kpiGroups.values()];
+  const low = groupsList.filter((e) => statusOf(e) === "low").length;
+  const out = groupsList.filter((e) => statusOf(e) === "out").length;
   $("#kpis").innerHTML = `
-    <div class="kpi"><span>Items distintos</span><strong>${items.length}</strong></div>
+    <div class="kpi"><span>Items distintos</span><strong>${kpiGroups.size}</strong></div>
     <div class="kpi"><span>Unidades en cofre</span><strong>${units.toLocaleString("es-CL")}</strong></div>
     <div class="kpi ${low ? "warn" : ""}"><span>Stock bajo</span><strong>${low}</strong></div>
     <div class="kpi ${out ? "danger" : ""}"><span>Agotados</span><strong>${out}</strong></div>`;
 
   const days = parseInt($("#period").value, 10);
-  const { data, error } = await supabase.rpc("top_used", { p_guild: guild.guild_id, p_days: days, p_limit: 10 });
+  const { data, error } = await supabase.rpc("top_used", { p_guild: guild.guild_id, p_days: days, p_limit: 300 });
   if (error) console.error("top_used:", error);
-  const used = data || [];
+  const usedAll = data || [];
   const byId = new Map(items.map((e) => [e.item_id, e]));
-  const maxUsed = Math.max(1, ...used.map((u) => Number(u.used)));
 
-  $("#topUsed").innerHTML = used.length
-    ? used.map((u) => {
-        const have = byId.get(u.item_id)?.eff ?? effOf(u.item_id);
-        const perDay = Number(u.used) / days;
-        const cover = perDay > 0 ? Math.floor(have / perDay) : null;
-        return `<div class="bar-row">${img(u.item_id)}<div class="bar-info">
-          <div class="bar-top"><span>${esc(itemName(u.item_id))}</span><span>${u.used} usados</span></div>
-          <div class="bar ${cover !== null && cover < 7 ? "red" : ""}"><i style="width:${(Number(u.used) / maxUsed) * 100}%"></i></div>
-          <div class="bar-sub">Stock: ${have} · cobertura ≈ ${cover === null ? "—" : cover + " días"}</div>
+  // Uso y stock por grupo: los equivalentes suman su uso y comparten stock
+  const groups = new Map();
+  const grp = (id) => {
+    const k = groupKeyOf(id);
+    if (!groups.has(k)) groups.set(k, { key: k, ids: new Set(), used: 0, usedTop: 0, rep: id, min: 0, eff: 0 });
+    const g = groups.get(k);
+    g.ids.add(id);
+    return g;
+  };
+  for (const e of items) {
+    const g = grp(e.item_id);
+    g.min = Math.max(g.min, e.min);
+    g.eff = e.eff;
+    if (e.total > (byId.get(g.rep)?.total ?? -1)) g.rep = e.item_id;
+  }
+  for (const u of usedAll) {
+    const g = grp(u.item_id);
+    const n = Number(u.used);
+    g.used += n;
+    if (n > g.usedTop) { g.usedTop = n; if (!byId.has(g.rep)) g.rep = u.item_id; }
+    if (!items.length || !byId.has(u.item_id)) g.eff = effOf(u.item_id);
+  }
+  const label = (g) => itemName(g.rep) + (g.ids.size > 1 ? ` · ${g.ids.size} equivalentes` : "");
+
+  const usedGroups = [...groups.values()].filter((g) => g.used > 0).sort((a, b) => b.used - a.used);
+  const maxUsed = Math.max(1, ...usedGroups.map((g) => g.used));
+  $("#topUsed").innerHTML = usedGroups.length
+    ? usedGroups.slice(0, 10).map((g) => {
+        const perDay = g.used / days;
+        const cover = perDay > 0 ? Math.floor(g.eff / perDay) : null;
+        return `<div class="bar-row">${img(g.rep)}<div class="bar-info">
+          <div class="bar-top"><span>${esc(label(g))}</span><span>${g.used} usados</span></div>
+          <div class="bar ${cover !== null && cover < 7 ? "red" : ""}"><i style="width:${(g.used / maxUsed) * 100}%"></i></div>
+          <div class="bar-sub">Stock: ${g.eff} · cobertura ≈ ${cover === null ? "—" : cover + " días"}</div>
         </div></div>`;
       }).join("")
     : '<p class="empty">Sin salidas registradas en este período.</p>';
 
-  // Faltantes: bajo el mínimo, o agotados con uso reciente aunque no tengan mínimo definido
-  const usedMap = new Map(used.map((u) => [u.item_id, Number(u.used)]));
-  const lacking = items
-    .map((e) => {
-      const deficit = e.min > 0 ? Math.max(e.min - e.eff, 0) : 0;
-      const recent = usedMap.get(e.item_id) || 0;
-      return { ...e, deficit, recent, score: deficit || (e.eff === 0 ? recent : 0) };
+  // Faltantes: bajo el mínimo, o agotados con uso reciente (por grupo de equivalencia)
+  const lacking = [...groups.values()]
+    .map((g) => {
+      const deficit = g.min > 0 ? Math.max(g.min - g.eff, 0) : 0;
+      return { ...g, name: label(g), deficit, recent: g.used, score: deficit || (g.eff === 0 ? g.used : 0) };
     })
-    .filter((e) => e.score > 0)
-    .sort((a, b) => b.score - a.score);
-  // Items usados y agotados que ni siquiera aparecen en el inventario
-  for (const u of used) {
-    if (!byId.has(u.item_id) && effOf(u.item_id) === 0 && !lacking.some((l) => l.item_id === u.item_id)) {
-      lacking.push({ item_id: u.item_id, name: itemName(u.item_id), total: 0, eff: 0, min: 0, deficit: 0, recent: Number(u.used), score: Number(u.used) });
-    }
-  }
+    .filter((g) => g.score > 0)
+    .sort((x, y) => y.score - x.score);
   const maxScore = Math.max(1, ...lacking.map((l) => l.score));
   const LACK_PAGE = 15;
   const shown = lackingExpanded ? lacking : lacking.slice(0, LACK_PAGE);
   $("#lacking").innerHTML = lacking.length
-    ? shown.map((l) => `<div class="bar-row">${img(l.item_id)}<div class="bar-info">
+    ? shown.map((l) => `<div class="bar-row">${img(l.rep)}<div class="bar-info">
         <div class="bar-top"><span>${esc(l.name)}</span><span>${l.eff}${l.min ? " / " + l.min : ""}</span></div>
         <div class="bar red"><i style="width:${(l.score / maxScore) * 100}%"></i></div>
         <div class="bar-sub">${l.deficit ? "Faltan " + l.deficit : "Agotado · se usaron " + l.recent + " en " + days + " días"}</div>
