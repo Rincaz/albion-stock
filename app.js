@@ -202,6 +202,9 @@ $("#formLogin").addEventListener("submit", async (e) => {
   btn.disabled = true;
   $("#lError").hidden = true; $("#lInfo").hidden = true;
   try {
+    if (authMode === "signup" && !$("#lEmail").value.includes("@")) {
+      throw new Error("Las cuentas con nombre de usuario las crea un admin desde la pestaña Miembros. Para registrarte tú, usa un correo.");
+    }
     const creds = { email: loginToEmail($("#lEmail").value), password: $("#lPass").value };
     const { data, error } = authMode === "login"
       ? await supabase.auth.signInWithPassword(creds)
@@ -212,7 +215,7 @@ $("#formLogin").addEventListener("submit", async (e) => {
     } else if (data.session) {
       await enter(data.session); // no depender solo del evento de auth
     } else {
-      loginMessage(creds.email.endsWith(`@${USER_DOMAIN}`) ? "Cuenta creada, pero Supabase pide confirmar el correo: un admin debe desactivar «Confirm email» para usuarios sin correo." : "Cuenta creada. Confirma tu correo y luego entra.", false);
+      loginMessage("Cuenta creada. Confirma tu correo y luego entra.", false);
     }
   } catch (err) {
     console.error(err);
@@ -816,8 +819,8 @@ $("#btnWipe").addEventListener("click", async () => {
 init();
 
 // ---------- Usuario sin correo ----------
-// Un usuario sin "@" (p. ej. "shankgos") se guarda internamente como shankgos@ignum.app
-const USER_DOMAIN = "ignum.app";
+// Un usuario sin "@" (p. ej. "shankgos") se guarda internamente como shankgos@ignum.invalid (dominio reservado, nunca recibe correo)
+const USER_DOMAIN = "ignum.invalid";
 function loginToEmail(v) {
   const t = String(v || "").trim().toLowerCase();
   if (t.includes("@")) return t;
@@ -864,6 +867,31 @@ $("#formAddMember").addEventListener("submit", async (e) => {
     ok.textContent = data === "added" ? "Agregado al gremio." : "Invitación guardada: se unirá cuando se registre con ese correo.";
     ok.hidden = false;
     $("#formAddMember").reset();
+    await loadMembers();
+  } catch (ex) {
+    console.error(ex);
+    err.textContent = ex.message || String(ex);
+    err.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#formCreateUser").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("#cuError"), ok = $("#cuOk"), btn = $("#cuSubmit");
+  err.hidden = ok.hidden = true;
+  btn.disabled = true;
+  try {
+    const username = $("#cuUser").value.trim().toLowerCase();
+    const { error } = await supabase.rpc("admin_create_user", {
+      p_guild: guild.guild_id, p_username: username, p_password: $("#cuPass").value,
+      p_display: $("#cuName").value, p_role: $("#cuRole").value,
+    });
+    if (error) throw error;
+    ok.textContent = `Cuenta «${username}» creada y agregada al gremio. Pásale el usuario y la contraseña.`;
+    ok.hidden = false;
+    $("#formCreateUser").reset();
     await loadMembers();
   } catch (ex) {
     console.error(ex);

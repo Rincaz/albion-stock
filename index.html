@@ -170,6 +170,25 @@
       </section>
       <section id="tab-miembros" hidden>
         <div class="card">
+          <h2>Crear cuenta con usuario y contraseña</h2>
+          <p class="hint">Para quien no tiene correo: le creas la cuenta aquí y entra con ese usuario. Pásale la contraseña por un medio privado.</p>
+          <form id="formCreateUser" class="row2">
+            <label>Usuario <input id="cuUser" required minlength="3" maxlength="30" pattern="[a-zA-Z0-9._\-]+" autocomplete="off" autocapitalize="none" placeholder="shankgos" /></label>
+            <label>Contraseña <input type="text" id="cuPass" required minlength="8" maxlength="72" autocomplete="off" /></label>
+            <label>Nombre en el gremio <input id="cuName" maxlength="40" autocomplete="off" placeholder="Opcional" /></label>
+            <label>Rol
+              <select id="cuRole">
+                <option value="editor">Editor (sube y mueve stock)</option>
+                <option value="viewer">Solo lectura</option>
+                <option value="admin">Admin</option>
+              </select>
+            </label>
+            <div class="dlg-actions"><button class="btn primary" id="cuSubmit">Crear cuenta</button></div>
+          </form>
+          <p class="form-error" id="cuError" hidden></p>
+          <p class="lg-ok" id="cuOk" hidden></p>
+        </div>
+        <div class="card">
           <h2>Agregar miembro</h2>
           <p class="hint">Si el correo ya tiene cuenta entra al gremio al instante. Si no, queda pendiente y se une solo cuando se registre e inicie sesión con ese correo.</p>
           <form id="formAddMember" class="row2">
