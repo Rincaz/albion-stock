@@ -15,7 +15,7 @@
         <button type="button" class="seg-btn active" data-mode="login">Entrar</button>
         <button type="button" class="seg-btn" data-mode="signup">Crear cuenta</button>
       </div>
-      <label>Correo <input type="email" id="lEmail" required autocomplete="username" /></label>
+      <label>Usuario o correo <input type="text" id="lEmail" required maxlength="200" autocomplete="username" autocapitalize="none" spellcheck="false" /></label>
       <label>Contraseña <input type="password" id="lPass" required minlength="6" autocomplete="current-password" /></label>
       <p class="form-error" id="lError" hidden></p>
       <p class="form-info" id="lInfo" hidden></p>
@@ -173,7 +173,7 @@
           <h2>Agregar miembro</h2>
           <p class="hint">Si el correo ya tiene cuenta entra al gremio al instante. Si no, queda pendiente y se une solo cuando se registre e inicie sesión con ese correo.</p>
           <form id="formAddMember" class="row2">
-            <label>Correo <input type="email" id="amEmail" required maxlength="200" autocomplete="off" /></label>
+            <label>Usuario o correo <input type="text" id="amEmail" required maxlength="200" autocomplete="off" autocapitalize="none" spellcheck="false" /></label>
             <label>Nombre en el gremio <input id="amName" maxlength="40" placeholder="Ej: shankgos" autocomplete="off" /></label>
             <label>Rol
               <select id="amRole">

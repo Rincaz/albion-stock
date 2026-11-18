@@ -202,17 +202,17 @@ $("#formLogin").addEventListener("submit", async (e) => {
   btn.disabled = true;
   $("#lError").hidden = true; $("#lInfo").hidden = true;
   try {
-    const creds = { email: $("#lEmail").value.trim(), password: $("#lPass").value };
+    const creds = { email: loginToEmail($("#lEmail").value), password: $("#lPass").value };
     const { data, error } = authMode === "login"
       ? await supabase.auth.signInWithPassword(creds)
       : await supabase.auth.signUp(creds);
     if (error) {
       console.error(error);
-      loginMessage(authMode === "login" ? "Credenciales inválidas o correo sin confirmar." : error.message);
+      loginMessage(authMode === "login" ? "Usuario/correo o contraseña incorrectos (o cuenta sin confirmar)." : error.message);
     } else if (data.session) {
       await enter(data.session); // no depender solo del evento de auth
     } else {
-      loginMessage("Cuenta creada. Confirma tu correo y luego entra.", false);
+      loginMessage(creds.email.endsWith(`@${USER_DOMAIN}`) ? "Cuenta creada, pero Supabase pide confirmar el correo: un admin debe desactivar «Confirm email» para usuarios sin correo." : "Cuenta creada. Confirma tu correo y luego entra.", false);
     }
   } catch (err) {
     console.error(err);
@@ -815,6 +815,19 @@ $("#btnWipe").addEventListener("click", async () => {
 
 init();
 
+// ---------- Usuario sin correo ----------
+// Un usuario sin "@" (p. ej. "shankgos") se guarda internamente como shankgos@ignum.app
+const USER_DOMAIN = "ignum.app";
+function loginToEmail(v) {
+  const t = String(v || "").trim().toLowerCase();
+  if (t.includes("@")) return t;
+  if (!/^[a-z0-9._-]{3,30}$/.test(t)) {
+    throw new Error("El usuario debe tener 3–30 caracteres: letras, números, punto, guion o guion bajo (sin espacios ni tildes).");
+  }
+  return `${t}@${USER_DOMAIN}`;
+}
+const emailToLogin = (e) => (e && e.endsWith(`@${USER_DOMAIN}`) ? e.slice(0, -USER_DOMAIN.length - 1) : e || "—");
+
 // ---------- Panel de miembros (solo admin) ----------
 const ROLE_LABEL = { admin: "Admin", editor: "Editor", viewer: "Solo lectura" };
 const roleOptions = (sel) => Object.entries(ROLE_LABEL).map(([v, l]) => `<option value="${v}" ${v === sel ? "selected" : ""}>${l}</option>`).join("");
@@ -829,11 +842,11 @@ async function loadMembers() {
   }
   $("#tbodyMembers").innerHTML = data.members.map((m) => `<tr>
     <td>${esc(m.display_name || "Sin nombre")}${m.is_self ? ' <span class="tier">tú</span>' : ""}</td>
-    <td>${esc(m.email || "—")}</td>
+    <td>${esc(emailToLogin(m.email))}</td>
     <td>${m.is_self ? ROLE_LABEL[m.role] : `<select data-role-for="${esc(m.user_id)}">${roleOptions(m.role)}</select>`}</td>
     <td>${m.is_self ? "" : `<button class="btn" data-remove="${esc(m.user_id)}" data-name="${esc(m.display_name || m.email)}">Quitar</button>`}</td></tr>`).join("");
   $("#pendingList").innerHTML = data.pending.length
-    ? data.pending.map((p) => `<li>${esc(p.display_name || "Sin nombre")} · ${esc(p.email)} · ${ROLE_LABEL[p.role]} ` +
+    ? data.pending.map((p) => `<li>${esc(p.display_name || "Sin nombre")} · ${esc(emailToLogin(p.email))} · ${ROLE_LABEL[p.role]} ` +
         `<button class="btn" data-cancel="${esc(p.email)}">Cancelar</button></li>`).join("")
     : '<li class="hint">Sin invitaciones pendientes.</li>';
 }
@@ -845,7 +858,7 @@ $("#formAddMember").addEventListener("submit", async (e) => {
   btn.disabled = true;
   try {
     const { data, error } = await supabase.rpc("admin_add_member", {
-      p_guild: guild.guild_id, p_email: $("#amEmail").value, p_display: $("#amName").value, p_role: $("#amRole").value,
+      p_guild: guild.guild_id, p_email: loginToEmail($("#amEmail").value), p_display: $("#amName").value, p_role: $("#amRole").value,
     });
     if (error) throw error;
     ok.textContent = data === "added" ? "Agregado al gremio." : "Invitación guardada: se unirá cuando se registre con ese correo.";
