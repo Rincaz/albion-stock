@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Albion · Control de Stock</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Login / registro -->
+  <section id="viewLogin" class="center" hidden>
+    <form id="formLogin" class="card narrow">
+      <h1>⚔️ Albion · Stock del gremio</h1>
+      <div class="seg">
+        <button type="button" class="seg-btn active" data-mode="login">Entrar</button>
+        <button type="button" class="seg-btn" data-mode="signup">Crear cuenta</button>
+      </div>
+      <label>Correo <input type="email" id="lEmail" required autocomplete="username" /></label>
+      <label>Contraseña <input type="password" id="lPass" required minlength="6" autocomplete="current-password" /></label>
+      <p class="form-error" id="lError" hidden></p>
+      <p class="form-info" id="lInfo" hidden></p>
+      <button class="btn primary" type="submit" id="lSubmit">Entrar</button>
+    </form>
+  </section>
+
+  <!-- Crear / unirse a un gremio -->
+  <section id="viewSetup" class="center" hidden>
+    <div class="narrow stack">
+      <form id="formCreateGuild" class="card">
+        <h2>Crear un gremio</h2>
+        <label>Nombre del gremio <input id="gName" required maxlength="60" /></label>
+        <label>Tu nombre en el juego <input id="gDisplay" maxlength="40" /></label>
+        <button class="btn primary" type="submit">Crear</button>
+      </form>
+      <form id="formJoinGuild" class="card">
+        <h2>Unirme con código de invitación</h2>
+        <label>Código <input id="jCode" required maxlength="40" /></label>
+        <label>Tu nombre en el juego <input id="jDisplay" maxlength="40" /></label>
+        <button class="btn primary" type="submit">Unirme</button>
+      </form>
+      <p class="form-error" id="sError" hidden></p>
+      <button class="btn" id="btnLogoutSetup">Salir</button>
+    </div>
+  </section>
+
+  <!-- App -->
+  <div id="viewApp" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <h1>⚔️ Stock</h1>
+        <select id="guildSelect" aria-label="Gremio"></select>
+        <span class="chip" id="roleChip"></span>
+        <span class="chip" id="inviteChip" hidden></span>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn primary" id="btnMove">+ Registrar movimiento</button>
+        <button class="btn" id="btnLogout">Salir</button>
+      </div>
+    </header>
+
+    <main>
+      <nav class="tabs">
+        <button class="tab active" data-tab="dashboard">Dashboard</button>
+        <button class="tab" data-tab="inventario">Inventario</button>
+        <button class="tab" data-tab="movimientos">Movimientos</button>
+      </nav>
+
+      <section id="tab-dashboard">
+        <div class="kpis" id="kpis"></div>
+        <div class="period">
+          Período de uso:
+          <select id="period">
+            <option value="7">7 días</option>
+            <option value="30" selected>30 días</option>
+            <option value="90">90 días</option>
+          </select>
+        </div>
+        <div class="grid2">
+          <div class="card">
+            <h2>🔥 Más utilizados</h2>
+            <p class="hint">Salidas del período · cobertura = días que dura el stock actual a ese ritmo</p>
+            <div id="topUsed"></div>
+          </div>
+          <div class="card">
+            <h2>⚠️ Faltantes</h2>
+            <p class="hint">Bajo el mínimo, o agotados y con uso reciente</p>
+            <div id="lacking"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-inventario" hidden>
+        <div class="toolbar">
+          <input type="search" id="search" placeholder="Buscar item…" />
+          <select id="filterStatus">
+            <option value="">Todos</option>
+            <option value="ok">En stock</option>
+            <option value="low">Stock bajo</option>
+            <option value="out">Agotado</option>
+          </select>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th></th><th>Item</th><th>Tier</th><th class="num">Stock</th><th class="num">Mínimo</th><th>Estado</th><th>Ubicación</th><th></th></tr></thead>
+            <tbody id="tbodyStock"></tbody>
+          </table>
+          <p class="empty" id="emptyStock" hidden>Sin items. Registra una entrada para empezar.</p>
+        </div>
+      </section>
+
+      <section id="tab-movimientos" hidden>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Fecha</th><th></th><th>Item</th><th>Jugador</th><th class="num">Cant.</th><th>Ubicación</th></tr></thead>
+            <tbody id="tbodyMoves"></tbody>
+          </table>
+          <p class="empty" id="emptyMoves" hidden>Aún no hay movimientos.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Diálogo movimiento -->
+  <dialog id="dlgMove">
+    <form method="dialog" id="formMove">
+      <h2>Registrar movimiento</h2>
+
+      <label>Item
+        <input type="search" id="pickSearch" placeholder="Escribe el nombre (ej: broadsword, bag, potion)…" autocomplete="off" />
+      </label>
+      <ul id="pickResults" class="pick" hidden></ul>
+
+      <div id="pickedBox" class="picked" hidden>
+        <img id="pickedImg" alt="" width="48" height="48" />
+        <div><strong id="pickedName"></strong><small id="pickedId"></small></div>
+        <label id="enchantWrap" hidden>Encantamiento
+          <select id="mEnchant">
+            <option value="0">.0</option><option value="1">.1</option><option value="2">.2</option>
+            <option value="3">.3</option><option value="4">.4</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="row">
+        <label>Tipo
+          <select id="mType">
+            <option value="in">Entrada (+)</option>
+            <option value="out">Salida (−)</option>
+            <option value="adjust">Ajuste (fijar stock)</option>
+          </select>
+        </label>
+        <label>Cantidad <input id="mQty" type="number" min="0" max="99999" step="1" required /></label>
+        <label>Stock mínimo <input id="mMin" type="number" min="0" max="99999" step="1" placeholder="sin cambio" /></label>
+      </div>
+      <label>Ubicación (cofre / pestaña)
+        <input id="mPlace" maxlength="40" list="placeList" placeholder="Opcional" />
+        <datalist id="placeList"></datalist>
+      </label>
+      <p class="form-error" id="mError" hidden></p>
+      <div class="dlg-actions">
+        <button type="button" class="btn" id="btnCancel">Cancelar</button>
+        <button type="submit" class="btn primary" id="btnSubmitMove">Registrar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
