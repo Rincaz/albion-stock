@@ -407,23 +407,33 @@ async function renderDashboard() {
       return { ...e, deficit, recent, score: deficit || (e.eff === 0 ? recent : 0) };
     })
     .filter((e) => e.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 10);
+    .sort((a, b) => b.score - a.score);
   // Items usados y agotados que ni siquiera aparecen en el inventario
   for (const u of used) {
-    if (!byId.has(u.item_id) && effOf(u.item_id) === 0 && lacking.length < 10) {
+    if (!byId.has(u.item_id) && effOf(u.item_id) === 0 && !lacking.some((l) => l.item_id === u.item_id)) {
       lacking.push({ item_id: u.item_id, name: itemName(u.item_id), total: 0, eff: 0, min: 0, deficit: 0, recent: Number(u.used), score: Number(u.used) });
     }
   }
   const maxScore = Math.max(1, ...lacking.map((l) => l.score));
+  const LACK_PAGE = 15;
+  const shown = lackingExpanded ? lacking : lacking.slice(0, LACK_PAGE);
   $("#lacking").innerHTML = lacking.length
-    ? lacking.map((l) => `<div class="bar-row">${img(l.item_id)}<div class="bar-info">
+    ? shown.map((l) => `<div class="bar-row">${img(l.item_id)}<div class="bar-info">
         <div class="bar-top"><span>${esc(l.name)}</span><span>${l.eff}${l.min ? " / " + l.min : ""}</span></div>
         <div class="bar red"><i style="width:${(l.score / maxScore) * 100}%"></i></div>
         <div class="bar-sub">${l.deficit ? "Faltan " + l.deficit : "Agotado · se usaron " + l.recent + " en " + days + " días"}</div>
-      </div></div>`).join("")
+      </div></div>`).join("") +
+      (lacking.length > LACK_PAGE
+        ? `<button type="button" class="btn" id="lackMore">${lackingExpanded ? "Ver menos" : `Ver todos (${lacking.length})`}</button>`
+        : "")
     : '<p class="empty">Nada falta 🎉</p>';
 }
+let lackingExpanded = false;
+$("#lacking").addEventListener("click", (e) => {
+  if (!e.target.closest("#lackMore")) return;
+  lackingExpanded = !lackingExpanded;
+  renderDashboard();
+});
 $("#period").addEventListener("change", renderDashboard);
 
 // Mínimo por defecto compartido por todo el gremio (solo un admin puede cambiarlo)
