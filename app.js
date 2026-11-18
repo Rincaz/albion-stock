@@ -440,6 +440,9 @@ async function renderDashboard() {
     })
     .filter((g) => g.score > 0)
     .sort((x, y) => y.score - x.score);
+  lastLacking = lacking;
+  lastDays = days;
+  $("#lackExport").hidden = lacking.length === 0;
   const maxScore = Math.max(1, ...lacking.map((l) => l.score));
   const LACK_PAGE = 15;
   const shown = lackingExpanded ? lacking : lacking.slice(0, LACK_PAGE);
@@ -455,6 +458,45 @@ async function renderDashboard() {
     : '<p class="empty">Nada falta 🎉</p>';
 }
 let lackingExpanded = false;
+let lastLacking = [], lastDays = 30;
+
+/** Lista de compra: lo que falta para llegar al mínimo; si está agotado sin mínimo, lo que se usó en el período. */
+function shoppingList() {
+  return lastLacking.map((l) => ({
+    name: itemName(l.rep), tier: tierOf(l.rep), id: l.rep, equiv: l.ids.size,
+    have: l.eff, min: l.min, buy: l.deficit || l.recent, used: l.recent,
+  }));
+}
+const csvCell = (v) => `"${String(v).replace(/"/g, '""')}"`;
+$("#lackCsv").addEventListener("click", () => {
+  const rows = shoppingList();
+  if (!rows.length) return;
+  const head = ["Item", "Tier", "ID", "En stock", "Mínimo", "A comprar", `Usados (${lastDays} días)`];
+  const csv = [head, ...rows.map((r) => [r.name, r.tier, r.id, r.have, r.min || "", r.buy, r.used])]
+    .map((r) => r.map(csvCell).join(";")).join("\r\n");
+  const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `faltantes-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+$("#lackCopy").addEventListener("click", async (e) => {
+  const rows = shoppingList();
+  if (!rows.length) return;
+  const text = rows.map((r) => `${r.buy} x ${r.name} ${r.tier}`).join("\n");
+  const btn = e.currentTarget;
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = "¡Copiado!";
+  } catch (err) {
+    console.error(err);
+    btn.textContent = "No se pudo copiar";
+  }
+  setTimeout(() => { btn.textContent = "Copiar lista"; }, 1800);
+});
 $("#lacking").addEventListener("click", (e) => {
   if (!e.target.closest("#lackMore")) return;
   lackingExpanded = !lackingExpanded;
