@@ -296,9 +296,7 @@ async function refreshAll() {
     console.error("Error cargando stock:", err);
     return alert("No se pudo cargar el stock: " + err.message);
   }
-  $("#defMin").value = defaultMin;
-  $("#defMin").disabled = guild.role !== "admin";
-  renderCatMinInputs();
+  renderCatTiles();
   renderStock();
   renderDashboard();
   renderSubidas();
@@ -474,9 +472,9 @@ async function renderDashboard() {
     })
     .filter((g) => g.score > 0)
     .sort((x, y) => y.score - x.score);
-  const catCount = (c) => lackingAll.filter((l) => l.cat === c).length;
-  $("#catChips").innerHTML = [["", "Todos"], ...CATS].map(([k, l]) =>
-    `<button type="button" class="chip ${catFilter === k ? "active" : ""}" data-cat="${k}">${l} (${k ? catCount(k) : lackingAll.length})</button>`).join("");
+  lackCounts = { "": lackingAll.length };
+  for (const [k] of CATS) lackCounts[k] = lackingAll.filter((l) => l.cat === k).length;
+  renderCatTiles();
   const lacking = catFilter ? lackingAll.filter((l) => l.cat === catFilter) : lackingAll;
   lastLacking = lacking;
   lastDays = days;
@@ -541,26 +539,18 @@ $("#lacking").addEventListener("click", (e) => {
   lackingExpanded = !lackingExpanded;
   renderDashboard();
 });
-$("#period").addEventListener("change", renderDashboard);
-
-// Mínimo por defecto compartido por todo el gremio (solo un admin puede cambiarlo)
-$("#defMin").addEventListener("change", async (e) => {
-  const v = Math.max(0, Math.min(99999, parseInt(e.target.value, 10) || 0));
-  if (guild.role !== "admin") { e.target.value = defaultMin; return; }
-  const { error } = await supabase.from("stock_settings").upsert(
-    { guild_id: guild.guild_id, default_min: v, updated_at: new Date().toISOString(), updated_by: currentUid },
-    { onConflict: "guild_id" });
-  if (error) {
-    console.error(error);
-    e.target.value = defaultMin;
-    return alert("No se pudo guardar el ajuste: " + error.message);
-  }
-  defaultMin = v;
-  e.target.value = v;
-  renderStock();
+$("#period").addEventListener("change", () => {
+  document.querySelectorAll("#periodSeg button").forEach((b) => b.classList.toggle("active", b.dataset.days === $("#period").value));
   renderDashboard();
 });
+$("#periodSeg").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-days]");
+  if (!b) return;
+  $("#period").value = b.dataset.days;
+  $("#period").dispatchEvent(new Event("change"));
+});
 
+// Mínimo por defecto compartido por todo el gremio (solo un admin puede cambiarlo)
 // Contar equivalentes (6.3 = 7.2 = 8.1): un solo estado, dos casillas sincronizadas
 function setEquiv(value) {
   useEquiv = value;
@@ -972,34 +962,61 @@ $("#btnRotate").addEventListener("click", async () => {
   renderHeader();
 });
 
-// ---------- Faltantes: filtro por tipo y mínimo por tipo ----------
-$("#catChips").addEventListener("click", (e) => {
-  const b = e.target.closest("[data-cat]");
-  if (!b) return;
-  catFilter = b.dataset.cat;
+// ---------- Faltantes: filtro por tipo y mínimo por tipo (un mosaico por tipo) ----------
+const CAT_ICON = { "": "🌐", arma: "⚔️", pecho: "🥋", casco: "⛑️", zapatos: "🥾", capa: "🧣", otros: "📦" };
+let lackCounts = {};
+
+function renderCatTiles() {
+  const isAdmin = guild?.role === "admin";
+  $("#catTiles").innerHTML = [["", "Todos · general"], ...CATS].map(([k, l]) => {
+    const own = k ? catMin[k] : defaultMin;
+    const n = lackCounts[k];
+    return `<div class="cat-tile ${catFilter === k ? "active" : ""}" data-cat="${k}" role="button" tabindex="0" aria-pressed="${catFilter === k}">
+      <div class="cat-head"><span class="cat-ico">${CAT_ICON[k]}</span><span class="cat-name">${l}</span>
+        ${n === undefined ? "" : `<span class="cat-count ${n ? "has" : ""}">${n}</span>`}</div>
+      <label class="cat-min">menos de
+        <input type="number" min="0" max="99999" step="1" data-catmin="${k}" value="${own ?? ""}" placeholder="${k ? defaultMin : 8}" ${isAdmin ? "" : "disabled"} aria-label="Mínimo ${l}" />
+        <span>uds.</span></label>
+      <div class="cat-sub">${k ? (catMin[k] === undefined ? "usa el general" : "propio del tipo") : "para tipos sin valor propio"}</div>
+    </div>`;
+  }).join("");
+}
+$("#catTiles").addEventListener("click", (e) => {
+  if (e.target.closest("input")) return; // editar el valor no cambia el filtro
+  const t = e.target.closest("[data-cat]");
+  if (!t) return;
+  catFilter = t.dataset.cat;
   lackingExpanded = false;
   renderDashboard();
 });
-
-function renderCatMinInputs() {
-  const isAdmin = guild.role === "admin";
-  $("#catMinInputs").innerHTML = CATS.map(([k, l]) =>
-    `<label>${l} <input type="number" min="0" max="99999" step="1" data-catmin="${k}" value="${catMin[k] ?? ""}" placeholder="${defaultMin}" ${isAdmin ? "" : "disabled"} /></label>`).join("");
-}
-$("#catMinInputs").addEventListener("change", async (e) => {
+$("#catTiles").addEventListener("keydown", (e) => {
+  if ((e.key === "Enter" || e.key === " ") && e.target.matches?.("[data-cat]")) { e.preventDefault(); e.target.click(); }
+});
+$("#catTiles").addEventListener("change", async (e) => {
   const k = e.target.dataset.catmin;
-  if (!k || guild.role !== "admin") return;
-  const next = { ...catMin };
-  if (e.target.value === "") delete next[k];
-  else next[k] = Math.max(0, Math.min(99999, parseInt(e.target.value, 10) || 0));
-  const { error } = await supabase.from("stock_settings").upsert(
-    { guild_id: guild.guild_id, default_min: defaultMin, cat_min: next, updated_at: new Date().toISOString(), updated_by: currentUid },
-    { onConflict: "guild_id" });
+  if (k === undefined) return;
+  if (guild.role !== "admin") return renderCatTiles();
+  const row = { guild_id: guild.guild_id, default_min: defaultMin, cat_min: catMin, updated_at: new Date().toISOString(), updated_by: currentUid };
+  let nextDefault = defaultMin, nextCat = { ...catMin };
+  if (k === "") {
+    nextDefault = Math.max(0, Math.min(99999, parseInt(e.target.value, 10) || 0));
+    row.default_min = nextDefault;
+  } else if (e.target.value === "") {
+    delete nextCat[k];
+    row.cat_min = nextCat;
+  } else {
+    nextCat[k] = Math.max(0, Math.min(99999, parseInt(e.target.value, 10) || 0));
+    row.cat_min = nextCat;
+  }
+  const { error } = await supabase.from("stock_settings").upsert(row, { onConflict: "guild_id" });
   if (error) {
     console.error(error);
     alert("No se pudo guardar: " + error.message);
-  } else catMin = next;
-  renderCatMinInputs();
+  } else {
+    defaultMin = nextDefault;
+    catMin = nextCat;
+  }
+  renderCatTiles();
   renderStock();
   renderDashboard();
 });
