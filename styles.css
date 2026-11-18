@@ -1,3 +1,5 @@
+/* El atributo hidden debe ganar siempre (si no, .center{display:grid} mantiene visible el login) */
+[hidden] { display: none !important; }
 :root {
   --bg: #11141a; --card: #1a1f29; --card2: #222938; --text: #e8e6df;
   --muted: #8d95a6; --border: #2b3345; --gold: #d4a64a; --primary: #d4a64a;
