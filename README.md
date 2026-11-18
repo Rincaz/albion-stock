@@ -20,3 +20,7 @@ Se agregó: tabla `stock_min`, y las funciones `stock_move` y `top_used`.
 ## Notas
 - "Más utilizados" suma las salidas (cantidades negativas en `movements`) del período, incluidas las del registro del banco.
 - Si Auth tiene confirmación de correo activa, tras crear la cuenta hay que confirmar el correo.
+
+## Equivalencias y nombres
+- **Equivalencias de equipo:** mismo tipo de item y misma suma tier + encantamiento (T6.3 = T7.2 = T8.1). Aplica a armas, armaduras, cascos, botas, capas, bolsas y offhands; no a pociones, comida ni recursos. Se activa/desactiva con la casilla "Contar equivalentes" (por defecto activada) y afecta estado, faltantes y cobertura.
+- **Nombres en español** (ES-ES, de ao-bin-dumps); la búsqueda también entiende inglés y no distingue tildes.
