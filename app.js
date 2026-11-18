@@ -9,13 +9,16 @@ const LS_GUILD = "albion-stock:guild";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-let catalog = [];            // [id, nombre ES, encantable, nombre EN]
+let catalog = [];            // [id, nombre ES, forma de encantamiento (0 no, 1 id@n, 2 id_LEVELn@n), nombre EN]
 const nameMap = new Map();   // base id -> nombre en español
 const enMap = new Map();     // base id -> nombre en inglés (para buscar)
 const LS_EQUIV = "albion-stock:equiv";
 let useEquiv = true;         // contar equivalentes (6.3 = 7.2 = 8.1)
-const LS_DEFMIN = "albion-stock:defmin";
-let defaultMin = 8;          // faltante si hay menos de N unidades (items sin mínimo propio)
+let defaultMin = 8;          // faltante si hay menos de N unidades (items sin mínimo propio); compartido por el gremio
+const nameIndex = new Map(); // nombre normalizado (ES/EN) -> Map(id -> forma)
+let pendingWipe = null;      // solicitud de borrado total pendiente
+let uploads = [];            // historial de subidas
+let wipes = [];              // historial de solicitudes de borrado
 let currentUid = null;
 let memberships = [];        // [{ guild_id, role, display_name, guilds: {id, name, invite_code} }]
 let guild = null;            // membresía activa
@@ -47,8 +50,13 @@ function equivKey(id) {
   return m ? `${m[2]}|${Number(m[1]) + Number(ench || 0)}` : null;
 }
 
+/** Separa un id en base y encantamiento; los recursos encantados usan T4_PLANKS_LEVEL1@1 (base T4_PLANKS). */
+function splitId(id) {
+  const [raw, ench] = id.split("@");
+  return { base: raw.replace(/_LEVEL\d$/, ""), ench: Number(ench || 0) };
+}
 function itemName(id) {
-  const [base, ench] = id.split("@");
+  const { base, ench } = splitId(id);
   const n = nameMap.get(base) || base;
   return ench ? `${n} .${ench}` : n;
 }
@@ -77,14 +85,20 @@ async function fetchAll(table, build) {
 async function init() {
   try {
     catalog = await (await fetch("items.json")).json();
-    catalog.forEach(([id, es, , en]) => { nameMap.set(id, es); enMap.set(id, en || es); });
+    catalog.forEach(([id, es, form, en]) => {
+      nameMap.set(id, es);
+      enMap.set(id, en || es);
+      for (const n of [es, en]) {
+        const k = norm(n);
+        if (!k) continue;
+        if (!nameIndex.has(k)) nameIndex.set(k, new Map());
+        nameIndex.get(k).set(id, form);
+      }
+    });
   } catch (err) {
     console.error("No se pudo cargar el catálogo de items:", err);
   }
   useEquiv = lsGet(LS_EQUIV) !== "0";
-  const savedMin = parseInt(lsGet(LS_DEFMIN), 10);
-  if (Number.isInteger(savedMin) && savedMin >= 0) defaultMin = savedMin;
-  $("#defMin").value = defaultMin;
   $("#eqInv").checked = $("#eqDash").checked = useEquiv;
   // setTimeout evita llamar a supabase dentro del callback (riesgo de bloqueo en supabase-js)
   supabase.auth.onAuthStateChange((event, session) => {
@@ -156,6 +170,8 @@ function renderHeader() {
   inv.hidden = guild.role !== "admin";
   inv.textContent = `Código: ${guild.guilds.invite_code}`;
   $("#btnMove").hidden = !canEdit();
+  $("#uploadCard").hidden = !canEdit();
+  $("#btnWipe").hidden = !canEdit();
 }
 
 $("#guildSelect").addEventListener("change", (e) => {
@@ -238,18 +254,30 @@ $("#formJoinGuild").addEventListener("submit", (e) => {
 async function refreshAll() {
   try {
     const gid = guild.guild_id;
-    const [stock, mins] = await Promise.all([
+    const [stock, mins, settings, wipeRows, upRows] = await Promise.all([
       fetchAll("stock", (q) => q.select("item_id, place, qty").eq("guild_id", gid).order("item_id").order("place")),
       fetchAll("stock_min", (q) => q.select("item_id, min_qty").eq("guild_id", gid).order("item_id")),
+      supabase.from("stock_settings").select("default_min").eq("guild_id", gid).maybeSingle(),
+      supabase.from("stock_wipe_requests").select("*").eq("guild_id", gid).order("requested_at", { ascending: false }).limit(10),
+      supabase.from("stock_uploads").select("*").eq("guild_id", gid).order("created_at", { ascending: false }).limit(50),
     ]);
+    for (const r of [settings, wipeRows, upRows]) if (r.error) throw r.error;
     stockRows = stock;
     minMap = new Map(mins.map((m) => [m.item_id, m.min_qty]));
+    defaultMin = settings.data ? settings.data.default_min : 8;
+    wipes = wipeRows.data;
+    pendingWipe = wipes.find((w) => w.status === "pending") || null;
+    uploads = upRows.data;
   } catch (err) {
     console.error("Error cargando stock:", err);
     return alert("No se pudo cargar el stock: " + err.message);
   }
+  $("#defMin").value = defaultMin;
+  $("#defMin").disabled = guild.role !== "admin";
   renderStock();
   renderDashboard();
+  renderSubidas();
+  renderWipeBanner();
   loadMoves();
 }
 
@@ -308,7 +336,7 @@ function renderStock() {
   const q = norm($("#search").value.trim());
   const st = $("#filterStatus").value;
   const rows = aggregate()
-    .filter((e) => !q || norm(e.name).includes(q) || norm(enMap.get(e.item_id.split("@")[0])).includes(q) || norm(e.item_id).includes(q))
+    .filter((e) => !q || norm(e.name).includes(q) || norm(enMap.get(splitId(e.item_id).base)).includes(q) || norm(e.item_id).includes(q))
     .filter((e) => !st || statusOf(e) === st)
     .sort((a, b) => a.name.localeCompare(b.name, "es"));
   $("#tbodyStock").innerHTML = rows.map((e) => {
@@ -398,13 +426,22 @@ async function renderDashboard() {
 }
 $("#period").addEventListener("change", renderDashboard);
 
-// Mínimo por defecto: items sin mínimo propio aparecen como faltantes bajo este valor (0 = desactivado)
-$("#defMin").addEventListener("change", (e) => {
+// Mínimo por defecto compartido por todo el gremio (solo un admin puede cambiarlo)
+$("#defMin").addEventListener("change", async (e) => {
   const v = Math.max(0, Math.min(99999, parseInt(e.target.value, 10) || 0));
+  if (guild.role !== "admin") { e.target.value = defaultMin; return; }
+  const { error } = await supabase.from("stock_settings").upsert(
+    { guild_id: guild.guild_id, default_min: v, updated_at: new Date().toISOString(), updated_by: currentUid },
+    { onConflict: "guild_id" });
+  if (error) {
+    console.error(error);
+    e.target.value = defaultMin;
+    return alert("No se pudo guardar el ajuste: " + error.message);
+  }
   defaultMin = v;
   e.target.value = v;
-  lsSet(LS_DEFMIN, String(v));
-  if (guild) { renderStock(); renderDashboard(); }
+  renderStock();
+  renderDashboard();
 });
 
 // Contar equivalentes (6.3 = 7.2 = 8.1): un solo estado, dos casillas sincronizadas
@@ -419,22 +456,23 @@ $("#eqDash").addEventListener("change", (e) => setEquiv(e.target.checked));
 
 document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
-  ["dashboard", "inventario", "movimientos"].forEach((n) => ($(`#tab-${n}`).hidden = n !== tab.dataset.tab));
+  ["dashboard", "inventario", "subidas", "movimientos"].forEach((n) => ($(`#tab-${n}`).hidden = n !== tab.dataset.tab));
 }));
 
 // ---------- Diálogo de movimiento ----------
-function setPicked(base, name, enchantable, enchant = 0) {
-  picked = { base, name, enchantable };
+function setPicked(base, name, form, enchant = 0) {
+  picked = { base, name, form };
   $("#pickedBox").hidden = false;
   $("#pickResults").hidden = true;
   $("#pickedName").textContent = name;
-  $("#enchantWrap").hidden = !enchantable;
+  $("#enchantWrap").hidden = !form;
   $("#mEnchant").value = String(enchant);
   updatePickedImg();
 }
 function currentItemId() {
-  const e = picked.enchantable ? parseInt($("#mEnchant").value, 10) : 0;
-  return e > 0 ? `${picked.base}@${e}` : picked.base;
+  const e = picked.form ? parseInt($("#mEnchant").value, 10) : 0;
+  if (e <= 0) return picked.base;
+  return picked.form === 2 ? `${picked.base}_LEVEL${e}@${e}` : `${picked.base}@${e}`;
 }
 function updatePickedImg() {
   const id = currentItemId();
@@ -458,8 +496,8 @@ $("#pickSearch").addEventListener("input", () => {
 $("#pickResults").addEventListener("click", (e) => {
   const li = e.target.closest("li");
   if (!li) return;
-  const [id, name, en] = $("#pickResults")._found[Number(li.dataset.i)];
-  setPicked(id, name, Boolean(en));
+  const [id, name, form] = $("#pickResults")._found[Number(li.dataset.i)];
+  setPicked(id, name, form);
 });
 
 function openMoveDialog(entry) {
@@ -469,9 +507,10 @@ function openMoveDialog(entry) {
   $("#pickedBox").hidden = true;
   $("#pickResults").hidden = true;
   if (entry) {
-    const [base, ench] = entry.item_id.split("@");
+    const { base, ench } = splitId(entry.item_id);
     const cat = catalog.find((c) => c[0] === base);
-    setPicked(base, nameMap.get(base) || base, Boolean(cat?.[2]) || Boolean(ench), Number(ench || 0));
+    const form = cat?.[2] || (ench ? (entry.item_id.includes("_LEVEL") ? 2 : 1) : 0);
+    setPicked(base, nameMap.get(base) || base, form, ench);
     $("#pickSearch").value = entry.name;
     $("#mMin").value = entry.minOwn ? entry.min : "";
     $("#mPlace").value = entry.places[0]?.place || "";
@@ -510,6 +549,176 @@ $("#formMove").addEventListener("submit", async (e) => {
     return fail((error || minError).message);
   }
   $("#dlgMove").close();
+  refreshAll();
+});
+
+// ---------- Subir el log del cofre ----------
+const LS_PLACE = "albion-stock:place";
+const dtFmt = new Intl.DateTimeFormat("es-CL", { dateStyle: "short", timeStyle: "medium" });
+
+/** "10/29/2026 17:24:26" (M/D/AAAA) -> "2026-10-29 17:24:26". Mismo criterio que la web de regear. */
+function isoDate(t) {
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}:\d{2}:\d{2})/.exec(t.trim());
+  return m ? `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")} ${m[4].padStart(8, "0")}` : t.trim().slice(0, 19);
+}
+
+/** Cada línea del log: Fecha, Jugador, Objeto, Encantamiento, Calidad, Cantidad (entre comillas o separadas por tabulación). */
+function parseLog(text) {
+  const out = { rows: [], bad: 0 };
+  text.split(/\r?\n/).forEach((line, i) => {
+    if (!line.trim()) return;
+    let f = line.match(/"([^"]*)"/g);
+    f = f && f.length >= 6 ? f.map((x) => x.slice(1, -1)) : line.split("\t");
+    if (f.length < 6) { out.bad++; return; }
+    if (i === 0 && /fecha|date/i.test(f[0])) return; // encabezado
+    const qty = parseInt(f[5], 10);
+    const date = isoDate(f[0]);
+    if (!qty || !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(date)) { out.bad++; return; }
+    // La firma debe ser idéntica a la de la web de regear: así no se duplican líneas entre ambas
+    out.rows.push({ sig: f.slice(0, 6).join("|"), date, player: f[1].trim(), obj: f[2], ench: f[3], qty });
+  });
+  return out;
+}
+
+/** Nombre del log (español o inglés) + encantamiento -> id de Albion. */
+function resolveObject(obj, enchRaw) {
+  const e = Math.min(4, Math.max(0, parseInt(enchRaw, 10) || 0));
+  const hits = [...(nameIndex.get(norm(obj.trim())) || new Map()).entries()];
+  if (!hits.length) return { error: "no reconocido" };
+  if (hits.length > 1) return { error: `ambiguo (${hits.length} items con ese nombre)` };
+  const [id, form] = hits[0];
+  if (e === 0) return { id };
+  if (form === 1) return { id: `${id}@${e}` };
+  if (form === 2) return { id: `${id}_LEVEL${e}@${e}` };
+  return { error: `no existe con encantamiento .${e}` };
+}
+
+async function runImport(dry) {
+  const parsed = parseLog($("#lgText").value);
+  const rows = [];
+  const bad = new Map();
+  let unrecognized = 0;
+  for (const r of parsed.rows) {
+    const res = resolveObject(r.obj, r.ench);
+    if (res.error) {
+      unrecognized++;
+      const k = `${r.obj} (.${parseInt(r.ench, 10) || 0}) — ${res.error}`;
+      bad.set(k, (bad.get(k) || 0) + Math.abs(r.qty));
+      continue;
+    }
+    rows.push({ sig: r.sig, date: r.date, player: r.player, item: res.id, qty: r.qty });
+  }
+  if (!rows.length && !unrecognized && !parsed.bad) throw new Error("Pega primero el log del cofre.");
+  const since = $("#lgSince").value ? $("#lgSince").value.replace("T", " ") + ":00" : null;
+  const { data, error } = await supabase.rpc("stock_import_log", {
+    p_guild: guild.guild_id, p_place: $("#lgPlace").value.trim(), p_rows: rows,
+    p_since: since, p_unrecognized: unrecognized, p_dry_run: dry,
+  });
+  if (error) throw error;
+  return { plan: data, bad, badLines: parsed.bad, unrecognized };
+}
+
+function renderPlan({ plan, bad, badLines, unrecognized }, done) {
+  const lastTo = uploads[0]?.log_to;
+  let html = "";
+  if (done) html += `<p class="lg-ok">✅ Subida registrada el ${esc(dtFmt.format(new Date()))}: ${plan.applied} líneas nuevas aplicadas.</p>`;
+  else if (plan.lines && !plan.applied) html += '<p class="lg-bad">Este registro ya está subido por completo: no hay líneas nuevas, no se cargará nada.</p>';
+  if (!done && plan.applied && lastTo && plan.to < lastTo) {
+    html += `<p class="lg-bad">Ojo: el log termina antes de la última subida (${esc(lastTo)}). Revisa que no sea otro registro.</p>`;
+  }
+  html += `<p class="lg-sum"><b>${plan.lines}</b> líneas leídas · <b>${plan.skipped}</b> ya subidas antes · <b>${plan.before}</b> anteriores a «Desde» · <b>${plan.applied}</b> nuevas` +
+    ` · <b>${plan.items_count}</b> items con movimiento neto (+${plan.units_in} / −${plan.units_out})` +
+    `${unrecognized ? ` · <b>${unrecognized}</b> sin reconocer` : ""}${badLines ? ` · ${badLines} ilegibles` : ""}</p>`;
+  if (plan.items.length) {
+    html += '<ul class="lg-list">' + plan.items.slice(0, 300).map((it) =>
+      `<li>${img(it.item)}<span class="lg-n ${it.net > 0 ? "up" : "down"}">${it.net > 0 ? "+" : ""}${it.net}</span> ${esc(itemName(it.item))} <span class="tier">${esc(tierOf(it.item))}</span>` +
+      `${it.net < 0 && it.have + it.net < 0 ? ' <span class="miss">retira más de lo que hay en stock</span>' : ""}</li>`).join("") + "</ul>";
+    if (plan.items.length > 300) html += `<p class="hint">…y ${plan.items.length - 300} items más.</p>`;
+  }
+  if (bad.size) {
+    html += '<p class="lg-bad">Sin reconocer (no se cargan):</p><ul class="lg-list">' +
+      [...bad.entries()].map(([k, n]) => `<li>${esc(k)} · ${n}</li>`).join("") + "</ul>";
+  }
+  $("#lgOut").innerHTML = html;
+}
+
+async function importAction(dry) {
+  const btnP = $("#lgPreview"), btnA = $("#lgApply");
+  btnP.disabled = btnA.disabled = true;
+  try {
+    const result = await runImport(dry);
+    renderPlan(result, !dry);
+    if (dry) btnA.disabled = !(result.plan.applied > 0);
+    else {
+      lsSet(LS_PLACE, $("#lgPlace").value.trim());
+      $("#lgText").value = "";
+      await refreshAll();
+    }
+  } catch (err) {
+    console.error(err);
+    $("#lgOut").innerHTML = `<p class="form-error">${esc(err.message || err)}</p>`;
+  } finally {
+    btnP.disabled = false;
+    if (dry === false) btnA.disabled = true;
+  }
+}
+$("#lgPreview").addEventListener("click", () => importAction(true));
+$("#lgApply").addEventListener("click", () => {
+  if (confirm("¿Aplicar este log al stock del gremio? Quedará registrado con día y hora.")) importAction(false);
+});
+$("#lgText").addEventListener("input", () => { $("#lgApply").disabled = true; });
+$("#lgFile").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (!f) return;
+  $("#lgText").value = await f.text();
+  importAction(true);
+});
+
+// ---------- Registro de subidas y borrados ----------
+function renderSubidas() {
+  if (!$("#lgPlace").value) $("#lgPlace").value = lsGet(LS_PLACE) || "";
+  $("#tbodyUploads").innerHTML = uploads.map((u) => `<tr>
+    <td>${esc(dtFmt.format(new Date(u.created_at)))}</td>
+    <td>${esc(u.user_name || "—")}</td>
+    <td>${esc(u.log_from || "?")} → ${esc(u.log_to || "?")}</td>
+    <td>${esc(u.place || "—")}</td>
+    <td class="num">${u.applied}</td><td class="num">${u.skipped}</td><td class="num">${u.unrecognized}</td>
+    <td class="num">${u.items}</td>
+    <td class="num mv-in">+${u.units_in}</td><td class="num mv-out">−${u.units_out}</td></tr>`).join("");
+  $("#emptyUploads").hidden = uploads.length > 0;
+  const label = { pending: "Pendiente", approved: "Confirmado", rejected: "Rechazado" };
+  $("#wipeList").innerHTML = wipes.length
+    ? wipes.map((w) => `<li>${esc(dtFmt.format(new Date(w.requested_at)))} · pedido por ${esc(w.requested_name)} · <b>${label[w.status]}</b>` +
+        `${w.resolved_at ? ` por ${esc(w.resolved_name)} (${esc(dtFmt.format(new Date(w.resolved_at)))})` : ""}` +
+        `${w.status === "approved" ? ` · ${w.items_count} items, ${w.units_count} uds.` : ""}</li>`).join("")
+    : '<li class="hint">Sin solicitudes de borrado.</li>';
+}
+
+// ---------- Borrado total con confirmación de un admin ----------
+function renderWipeBanner() {
+  const box = $("#wipeBanner");
+  $("#btnWipe").disabled = Boolean(pendingWipe);
+  if (!pendingWipe) { box.hidden = true; return; }
+  const isAdmin = guild.role === "admin";
+  box.hidden = false;
+  box.innerHTML = `<div><strong>⚠️ Solicitud de borrado total del stock</strong><br><small>Pedida por ${esc(pendingWipe.requested_name)} el ` +
+    `${esc(dtFmt.format(new Date(pendingWipe.requested_at)))}. ${isAdmin ? "Como admin puedes confirmarla o rechazarla." : "Falta la confirmación de un admin."}</small></div>` +
+    (isAdmin ? '<div class="wipe-actions"><button class="btn danger" id="btnWipeOk">Confirmar borrado</button><button class="btn" id="btnWipeNo">Rechazar</button></div>' : "");
+}
+$("#wipeBanner").addEventListener("click", async (e) => {
+  const ok = e.target.closest("#btnWipeOk");
+  const no = e.target.closest("#btnWipeNo");
+  if ((!ok && !no) || !pendingWipe) return;
+  if (ok && !confirm("Esto elimina TODO el stock del gremio (queda registrado en Movimientos). ¿Confirmas el borrado?")) return;
+  const { error } = await supabase.rpc("stock_wipe_resolve", { p_request: pendingWipe.id, p_approve: Boolean(ok) });
+  if (error) { console.error(error); return alert(error.message); }
+  refreshAll();
+});
+$("#btnWipe").addEventListener("click", async () => {
+  if (!confirm("Vas a solicitar borrar TODO el stock del gremio. No se borra nada hasta que un admin lo confirme. ¿Enviar la solicitud?")) return;
+  const { error } = await supabase.rpc("stock_wipe_request", { p_guild: guild.guild_id });
+  if (error) { console.error(error); return alert(error.message); }
   refreshAll();
 });
 
