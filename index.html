@@ -127,10 +127,12 @@
             <label>Ubicación del cofre <input id="lgPlace" maxlength="40" list="placeList" placeholder="Opcional" /></label>
             <label>Solo desde (opcional) <input type="datetime-local" id="lgSince" /></label>
           </div>
+          <label class="check"><input type="checkbox" id="lgForce" /> Volver a cargar líneas ya subidas (úsalo después de borrar el stock)</label>
           <div class="dlg-actions">
             <button type="button" class="btn" id="lgPreview">Previsualizar</button>
             <button type="button" class="btn primary" id="lgApply" disabled>Aplicar al stock</button>
           </div>
+          <p class="hint" id="lgApplyHint">Primero pulsa «Previsualizar»; «Aplicar» se habilita si hay líneas nuevas.</p>
           <div id="lgOut"></div>
         </div>
 

@@ -612,7 +612,7 @@ async function runImport(dry) {
   const since = $("#lgSince").value ? $("#lgSince").value.replace("T", " ") + ":00" : null;
   const { data, error } = await supabase.rpc("stock_import_log", {
     p_guild: guild.guild_id, p_place: $("#lgPlace").value.trim(), p_rows: rows,
-    p_since: since, p_unrecognized: unrecognized, p_dry_run: dry,
+    p_since: since, p_unrecognized: unrecognized, p_dry_run: dry, p_force: $("#lgForce").checked,
   });
   if (error) throw error;
   return { plan: data, bad, badLines: parsed.bad, unrecognized };
@@ -622,7 +622,8 @@ function renderPlan({ plan, bad, badLines, unrecognized }, done) {
   const lastTo = uploads[0]?.log_to;
   let html = "";
   if (done) html += `<p class="lg-ok">✅ Subida registrada el ${esc(dtFmt.format(new Date()))}: ${plan.applied} líneas nuevas aplicadas.</p>`;
-  else if (plan.lines && !plan.applied) html += '<p class="lg-bad">Este registro ya está subido por completo: no hay líneas nuevas, no se cargará nada.</p>';
+  else if (plan.lines && !plan.applied) html += '<p class="lg-bad">No hay líneas nuevas: todo este registro figura como ya subido (por esta web o por regear). Si borraste el stock y quieres cargarlo otra vez, marca «Volver a cargar líneas ya subidas» y previsualiza de nuevo.</p>';
+  else if (!plan.lines) html += '<p class="lg-bad">No se leyó ninguna línea válida. Revisa que pegaste el log con sus 6 columnas.</p>';
   if (!done && plan.applied && lastTo && plan.to < lastTo) {
     html += `<p class="lg-bad">Ojo: el log termina antes de la última subida (${esc(lastTo)}). Revisa que no sea otro registro.</p>`;
   }
@@ -648,7 +649,10 @@ async function importAction(dry) {
   try {
     const result = await runImport(dry);
     renderPlan(result, !dry);
-    if (dry) btnA.disabled = !(result.plan.applied > 0);
+    if (dry) {
+      btnA.disabled = !(result.plan.applied > 0);
+      $("#lgApplyHint").hidden = !btnA.disabled;
+    }
     else {
       lsSet(LS_PLACE, $("#lgPlace").value.trim());
       $("#lgText").value = "";
@@ -666,7 +670,11 @@ $("#lgPreview").addEventListener("click", () => importAction(true));
 $("#lgApply").addEventListener("click", () => {
   if (confirm("¿Aplicar este log al stock del gremio? Quedará registrado con día y hora.")) importAction(false);
 });
-$("#lgText").addEventListener("input", () => { $("#lgApply").disabled = true; });
+const lockApply = () => { $("#lgApply").disabled = true; $("#lgApplyHint").hidden = false; };
+$("#lgText").addEventListener("input", lockApply);
+$("#lgForce").addEventListener("change", lockApply);
+$("#lgPlace").addEventListener("input", lockApply);
+$("#lgSince").addEventListener("change", lockApply);
 $("#lgFile").addEventListener("change", async (e) => {
   const f = e.target.files[0];
   e.target.value = "";
