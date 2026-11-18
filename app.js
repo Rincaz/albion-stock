@@ -62,33 +62,57 @@ async function init() {
     console.error("No se pudo cargar el catálogo de items:", err);
   }
   // setTimeout evita llamar a supabase dentro del callback (riesgo de bloqueo en supabase-js)
-  supabase.auth.onAuthStateChange((_e, session) => setTimeout(() => handleSession(session), 0));
+  supabase.auth.onAuthStateChange((event, session) => {
+    if (event === "TOKEN_REFRESHED") return;
+    setTimeout(() => enter(session), 0);
+  });
 }
 
 function show(view) {
   ["viewLogin", "viewSetup", "viewApp"].forEach((v) => ($(`#${v}`).hidden = v !== view));
 }
 
-async function handleSession(session) {
-  const uid = session?.user?.id ?? null;
-  if (uid === currentUid && uid !== null) return; // refresco de token, nada que hacer
-  currentUid = uid;
-  if (!uid) {
-    guild = null; memberships = [];
-    return show("viewLogin");
-  }
-  await loadMemberships();
+function loginMessage(text, isError = true) {
+  const box = isError ? $("#lError") : $("#lInfo");
+  $("#lError").hidden = true;
+  $("#lInfo").hidden = true;
+  box.textContent = text;
+  box.hidden = false;
 }
 
-async function loadMemberships() {
+let loadedUid = null; // usuario cuyo gremio ya se cargó con éxito
+let entering = false; // evita cargas simultáneas (el login dispara varios eventos)
+
+/** Punto único de entrada: decide qué vista mostrar según la sesión. Nunca deja la pantalla en silencio. */
+async function enter(session) {
+  const uid = session?.user?.id ?? null;
+  currentUid = uid;
+  if (!uid) {
+    loadedUid = null; guild = null; memberships = [];
+    return show("viewLogin");
+  }
+  if (entering) return;
+  if (loadedUid === uid && (!$("#viewApp").hidden || !$("#viewSetup").hidden)) return; // ya cargado
+  entering = true;
+  try {
+    await loadMemberships(uid);
+    loadedUid = uid;
+  } catch (err) {
+    console.error("No se pudo cargar el gremio:", err);
+    loadedUid = null;
+    show("viewLogin");
+    loginMessage("Sesión iniciada, pero no se pudo cargar tu gremio: " + (err.message || err));
+  } finally {
+    entering = false;
+  }
+}
+
+async function loadMemberships(uid) {
   const { data, error } = await supabase
     .from("guild_members")
     .select("guild_id, role, display_name, guilds(id, name, invite_code)")
-    .eq("user_id", currentUid);
-  if (error) {
-    console.error("guild_members:", error);
-    return show("viewLogin");
-  }
+    .eq("user_id", uid);
+  if (error) throw error;
   memberships = data.filter((m) => m.guilds);
   if (!memberships.length) return show("viewSetup");
   const saved = lsGet(LS_GUILD);
@@ -128,19 +152,28 @@ document.querySelectorAll(".seg-btn").forEach((b) => b.addEventListener("click",
 
 $("#formLogin").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const err = $("#lError"), info = $("#lInfo");
-  err.hidden = true; info.hidden = true;
-  const creds = { email: $("#lEmail").value.trim(), password: $("#lPass").value };
-  const { data, error } = authMode === "login"
-    ? await supabase.auth.signInWithPassword(creds)
-    : await supabase.auth.signUp(creds);
-  if (error) {
-    console.error(error);
-    err.textContent = authMode === "login" ? "Credenciales inválidas." : error.message;
-    err.hidden = false;
-  } else if (authMode === "signup" && !data.session) {
-    info.textContent = "Cuenta creada. Confirma tu correo y luego entra.";
-    info.hidden = false;
+  const btn = $("#lSubmit");
+  if (btn.disabled) return; // evita doble envío
+  btn.disabled = true;
+  $("#lError").hidden = true; $("#lInfo").hidden = true;
+  try {
+    const creds = { email: $("#lEmail").value.trim(), password: $("#lPass").value };
+    const { data, error } = authMode === "login"
+      ? await supabase.auth.signInWithPassword(creds)
+      : await supabase.auth.signUp(creds);
+    if (error) {
+      console.error(error);
+      loginMessage(authMode === "login" ? "Credenciales inválidas o correo sin confirmar." : error.message);
+    } else if (data.session) {
+      await enter(data.session); // no depender solo del evento de auth
+    } else {
+      loginMessage("Cuenta creada. Confirma tu correo y luego entra.", false);
+    }
+  } catch (err) {
+    console.error(err);
+    loginMessage("Error inesperado: " + (err.message || err));
+  } finally {
+    btn.disabled = false;
   }
 });
 
@@ -158,7 +191,14 @@ async function setupAction(call, errBox = $("#sError")) {
     errBox.hidden = false;
     return;
   }
-  await loadMemberships();
+  try {
+    await loadMemberships(currentUid);
+    loadedUid = currentUid;
+  } catch (e) {
+    console.error(e);
+    errBox.textContent = e.message || String(e);
+    errBox.hidden = false;
+  }
 }
 $("#formCreateGuild").addEventListener("submit", (e) => {
   e.preventDefault();
