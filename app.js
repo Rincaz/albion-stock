@@ -24,6 +24,10 @@ let memberships = [];        // [{ guild_id, role, display_name, guilds: {id, na
 let guild = null;            // membresía activa
 let stockRows = [];          // filas de public.stock
 let minMap = new Map();      // item_id -> min_qty
+let catMin = {};             // tipo -> mínimo del tipo (compartido por el gremio)
+let excluded = new Set();    // items ocultos del dashboard de ESTE usuario
+let excludedKeys = new Set();
+let catFilter = "";          // filtro de tipo en Faltantes ("" = todos)
 let picked = null;           // { base, name, enchantable }
 
 // ---------- Utilidades ----------
@@ -49,6 +53,15 @@ function equivKey(id) {
   const m = base.match(/^T(\d)_(.+)$/);
   return m ? `${m[2]}|${Number(m[1]) + Number(ench || 0)}` : null;
 }
+
+/** Tipos para filtrar faltantes y asignar mínimos: arma, pecho, casco, zapatos, capa y otros. */
+const CATS = [["arma", "Arma"], ["pecho", "Pecho"], ["casco", "Casco"], ["zapatos", "Zapatos"], ["capa", "Capas"], ["otros", "Otros"]];
+function catOf(id) {
+  const m = /^T\d_(MAIN|2H|ARMOR|HEAD|SHOES|CAPE)/.exec(id);
+  if (!m) return "otros";
+  return { MAIN: "arma", "2H": "arma", ARMOR: "pecho", HEAD: "casco", SHOES: "zapatos", CAPE: "capa" }[m[1]];
+}
+const catLabel = (c) => CATS.find(([k]) => k === c)?.[1] || "Otros";
 
 /** Separa un id en base y encantamiento; los recursos encantados usan T4_PLANKS_LEVEL1@1 (base T4_PLANKS). */
 function splitId(id) {
@@ -261,17 +274,21 @@ $("#formJoinGuild").addEventListener("submit", (e) => {
 async function refreshAll() {
   try {
     const gid = guild.guild_id;
-    const [stock, mins, settings, wipeRows, upRows] = await Promise.all([
+    const [stock, mins, settings, wipeRows, upRows, exclRows] = await Promise.all([
       fetchAll("stock", (q) => q.select("item_id, place, qty").eq("guild_id", gid).order("item_id").order("place")),
       fetchAll("stock_min", (q) => q.select("item_id, min_qty").eq("guild_id", gid).order("item_id")),
-      supabase.from("stock_settings").select("default_min").eq("guild_id", gid).maybeSingle(),
+      supabase.from("stock_settings").select("default_min, cat_min").eq("guild_id", gid).maybeSingle(),
       supabase.from("stock_wipe_requests").select("*").eq("guild_id", gid).order("requested_at", { ascending: false }).limit(10),
       supabase.from("stock_uploads").select("*").eq("guild_id", gid).order("created_at", { ascending: false }).limit(50),
+      supabase.from("stock_dashboard_exclusions").select("item_id").eq("guild_id", gid).limit(5000),
     ]);
-    for (const r of [settings, wipeRows, upRows]) if (r.error) throw r.error;
+    for (const r of [settings, wipeRows, upRows, exclRows]) if (r.error) throw r.error;
     stockRows = stock;
     minMap = new Map(mins.map((m) => [m.item_id, m.min_qty]));
     defaultMin = settings.data ? settings.data.default_min : 8;
+    catMin = settings.data?.cat_min || {};
+    excluded = new Set(exclRows.data.map((r) => r.item_id));
+    rebuildExcludedKeys();
     wipes = wipeRows.data;
     pendingWipe = wipes.find((w) => w.status === "pending") || null;
     uploads = upRows.data;
@@ -281,10 +298,12 @@ async function refreshAll() {
   }
   $("#defMin").value = defaultMin;
   $("#defMin").disabled = guild.role !== "admin";
+  renderCatMinInputs();
   renderStock();
   renderDashboard();
   renderSubidas();
   renderWipeBanner();
+  renderExcluded();
   loadMoves();
 }
 
@@ -300,8 +319,9 @@ function aggregate() {
   for (const id of minMap.keys()) if (!map.has(id)) map.set(id, { item_id: id, total: 0, places: [] });
   const entries = [...map.values()].map((e) => ({
     ...e,
-    // Mínimo propio si existe (0 = sin mínimo); si no, el mínimo por defecto
-    min: minMap.has(e.item_id) ? minMap.get(e.item_id) : defaultMin,
+    // Mínimo propio si existe (0 = sin mínimo); si no, el del tipo; si no, el mínimo por defecto
+    min: minMap.has(e.item_id) ? minMap.get(e.item_id) : (catMin[catOf(e.item_id)] ?? defaultMin),
+    cat: catOf(e.item_id),
     minOwn: minMap.has(e.item_id),
     name: itemName(e.item_id), key: equivKey(e.item_id),
   }));
@@ -374,11 +394,17 @@ $("#tbodyStock").addEventListener("click", (e) => {
 });
 
 // ---------- Dashboard ----------
+function rebuildExcludedKeys() {
+  excludedKeys = new Set([...excluded].map(equivKey).filter(Boolean));
+}
+/** Un item excluido oculta también a sus equivalentes cuando las equivalencias están activas. */
+const isExcluded = (id) => excluded.has(id) || (useEquiv && excludedKeys.has(equivKey(id)));
+
 /** Con equivalencias activas, los items equivalentes cuentan como uno solo (mismo grupo). */
 const groupKeyOf = (id) => (useEquiv && equivKey(id)) || id;
 
 async function renderDashboard() {
-  const items = aggregate();
+  const items = aggregate().filter((e) => !isExcluded(e.item_id));
   const units = items.reduce((a, e) => a + e.total, 0);
   // KPIs por grupo de equivalencia (el stock efectivo ya es el mismo para todo el grupo)
   const kpiGroups = new Map();
@@ -417,6 +443,7 @@ async function renderDashboard() {
     if (e.total > (byId.get(g.rep)?.total ?? -1)) g.rep = e.item_id;
   }
   for (const u of usedAll) {
+    if (isExcluded(u.item_id)) continue;
     const g = grp(u.item_id);
     const n = Number(u.used);
     g.used += n;
@@ -431,22 +458,26 @@ async function renderDashboard() {
     ? usedGroups.slice(0, 10).map((g) => {
         const perDay = g.used / days;
         const cover = perDay > 0 ? Math.floor(g.eff / perDay) : null;
-        return `<div class="bar-row">${img(g.rep)}<div class="bar-info">
+        return `<div class="bar-row has-x">${img(g.rep)}<div class="bar-info">
           <div class="bar-top"><span>${esc(label(g))}</span><span>${g.used} usados</span></div>
           <div class="bar ${cover !== null && cover < 7 ? "red" : ""}"><i style="width:${(g.used / maxUsed) * 100}%"></i></div>
           <div class="bar-sub">Stock: ${g.eff} · cobertura ≈ ${cover === null ? "—" : cover + " días"}</div>
-        </div></div>`;
+        </div>${exclBtn(g)}</div>`;
       }).join("")
     : '<p class="empty">Sin salidas registradas en este período.</p>';
 
   // Faltantes: bajo el mínimo, o agotados con uso reciente (por grupo de equivalencia)
-  const lacking = [...groups.values()]
+  const lackingAll = [...groups.values()]
     .map((g) => {
       const deficit = g.min > 0 ? Math.max(g.min - g.eff, 0) : 0;
-      return { ...g, name: label(g), deficit, recent: g.used, score: deficit || (g.eff === 0 ? g.used : 0) };
+      return { ...g, name: label(g), cat: catOf(g.rep), deficit, recent: g.used, score: deficit || (g.eff === 0 ? g.used : 0) };
     })
     .filter((g) => g.score > 0)
     .sort((x, y) => y.score - x.score);
+  const catCount = (c) => lackingAll.filter((l) => l.cat === c).length;
+  $("#catChips").innerHTML = [["", "Todos"], ...CATS].map(([k, l]) =>
+    `<button type="button" class="chip ${catFilter === k ? "active" : ""}" data-cat="${k}">${l} (${k ? catCount(k) : lackingAll.length})</button>`).join("");
+  const lacking = catFilter ? lackingAll.filter((l) => l.cat === catFilter) : lackingAll;
   lastLacking = lacking;
   lastDays = days;
   $("#lackExport").hidden = lacking.length === 0;
@@ -454,16 +485,17 @@ async function renderDashboard() {
   const LACK_PAGE = 15;
   const shown = lackingExpanded ? lacking : lacking.slice(0, LACK_PAGE);
   $("#lacking").innerHTML = lacking.length
-    ? shown.map((l) => `<div class="bar-row">${img(l.rep)}<div class="bar-info">
+    ? shown.map((l) => `<div class="bar-row has-x">${img(l.rep)}<div class="bar-info">
         <div class="bar-top"><span>${esc(l.name)}</span><span>${l.eff}${l.min ? " / " + l.min : ""}</span></div>
         <div class="bar red"><i style="width:${(l.score / maxScore) * 100}%"></i></div>
         <div class="bar-sub">${l.deficit ? "Faltan " + l.deficit : "Agotado · se usaron " + l.recent + " en " + days + " días"}</div>
-      </div></div>`).join("") +
+      </div>${exclBtn(l)}</div>`).join("") +
       (lacking.length > LACK_PAGE
         ? `<button type="button" class="btn" id="lackMore">${lackingExpanded ? "Ver menos" : `Ver todos (${lacking.length})`}</button>`
         : "")
-    : '<p class="empty">Nada falta 🎉</p>';
+    : `<p class="empty">${catFilter ? "Nada falta en este tipo 🎉" : "Nada falta 🎉"}</p>`;
 }
+const exclBtn = (g) => `<button type="button" class="x-btn" data-excl="${esc([...g.ids].join(" "))}" title="Excluir del dashboard" aria-label="Excluir del dashboard">✕</button>`;
 let lackingExpanded = false;
 let lastLacking = [], lastDays = 30;
 
@@ -478,8 +510,8 @@ const csvCell = (v) => `"${String(v).replace(/"/g, '""')}"`;
 $("#lackCsv").addEventListener("click", () => {
   const rows = shoppingList();
   if (!rows.length) return;
-  const head = ["Item", "Tier", "ID", "En stock", "Mínimo", "A comprar", `Usados (${lastDays} días)`];
-  const csv = [head, ...rows.map((r) => [r.name, r.tier, r.id, r.have, r.min || "", r.buy, r.used])]
+  const head = ["Item", "Tipo", "Tier", "ID", "En stock", "Mínimo", "A comprar", `Usados (${lastDays} días)`];
+  const csv = [head, ...rows.map((r) => [r.name, catLabel(catOf(r.id)), r.tier, r.id, r.have, r.min || "", r.buy, r.used])]
     .map((r) => r.map(csvCell).join(";")).join("\r\n");
   const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
@@ -541,7 +573,7 @@ $("#eqDash").addEventListener("change", (e) => setEquiv(e.target.checked));
 
 document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
-  ["dashboard", "inventario", "subidas", "movimientos", "miembros"].forEach((n) => ($(`#tab-${n}`).hidden = n !== tab.dataset.tab));
+  ["dashboard", "inventario", "subidas", "movimientos", "excluidos", "miembros"].forEach((n) => ($(`#tab-${n}`).hidden = n !== tab.dataset.tab));
   if (tab.dataset.tab === "miembros") loadMembers();
 }));
 
@@ -939,3 +971,78 @@ $("#btnRotate").addEventListener("click", async () => {
   guild.guilds.invite_code = data;
   renderHeader();
 });
+
+// ---------- Faltantes: filtro por tipo y mínimo por tipo ----------
+$("#catChips").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-cat]");
+  if (!b) return;
+  catFilter = b.dataset.cat;
+  lackingExpanded = false;
+  renderDashboard();
+});
+
+function renderCatMinInputs() {
+  const isAdmin = guild.role === "admin";
+  $("#catMinInputs").innerHTML = CATS.map(([k, l]) =>
+    `<label>${l} <input type="number" min="0" max="99999" step="1" data-catmin="${k}" value="${catMin[k] ?? ""}" placeholder="${defaultMin}" ${isAdmin ? "" : "disabled"} /></label>`).join("");
+}
+$("#catMinInputs").addEventListener("change", async (e) => {
+  const k = e.target.dataset.catmin;
+  if (!k || guild.role !== "admin") return;
+  const next = { ...catMin };
+  if (e.target.value === "") delete next[k];
+  else next[k] = Math.max(0, Math.min(99999, parseInt(e.target.value, 10) || 0));
+  const { error } = await supabase.from("stock_settings").upsert(
+    { guild_id: guild.guild_id, default_min: defaultMin, cat_min: next, updated_at: new Date().toISOString(), updated_by: currentUid },
+    { onConflict: "guild_id" });
+  if (error) {
+    console.error(error);
+    alert("No se pudo guardar: " + error.message);
+  } else catMin = next;
+  renderCatMinInputs();
+  renderStock();
+  renderDashboard();
+});
+
+// ---------- Excluir items de MI dashboard ----------
+async function excludeItems(ids) {
+  const rows = ids.filter((id) => !excluded.has(id)).map((id) => ({ guild_id: guild.guild_id, item_id: id }));
+  if (!rows.length) return;
+  const { error } = await supabase.from("stock_dashboard_exclusions")
+    .upsert(rows, { onConflict: "guild_id,user_id,item_id", ignoreDuplicates: true });
+  if (error) { console.error(error); return alert("No se pudo excluir: " + error.message); }
+  rows.forEach((r) => excluded.add(r.item_id));
+  rebuildExcludedKeys();
+  renderDashboard();
+  renderExcluded();
+}
+async function reintegrateItem(id) {
+  // Con equivalencias activas se reintegra todo el grupo, porque excluir uno ocultaba a todos
+  const k = useEquiv ? equivKey(id) : null;
+  const ids = [...excluded].filter((x) => x === id || (k && equivKey(x) === k));
+  const { error } = await supabase.from("stock_dashboard_exclusions").delete()
+    .eq("guild_id", guild.guild_id).in("item_id", ids);
+  if (error) { console.error(error); return alert("No se pudo reintegrar: " + error.message); }
+  ids.forEach((x) => excluded.delete(x));
+  rebuildExcludedKeys();
+  renderDashboard();
+  renderExcluded();
+}
+function renderExcluded() {
+  const list = [...excluded].sort((a, b) => itemName(a).localeCompare(itemName(b), "es"));
+  $("#tabExcluidos").textContent = list.length ? `Excluidos (${list.length})` : "Excluidos";
+  $("#excludedList").innerHTML = list.map((id) => `<li>${img(id)} <span>${esc(itemName(id))} <span class="tier">${esc(tierOf(id))}</span>
+    <span class="hint">· ${esc(catLabel(catOf(id)))}</span></span>
+    <button type="button" class="btn" data-reint="${esc(id)}">Reintegrar</button></li>`).join("");
+  $("#emptyExcluded").hidden = list.length > 0;
+}
+$("#excludedList").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-reint]");
+  if (b) reintegrateItem(b.dataset.reint);
+});
+for (const box of ["#topUsed", "#lacking"]) {
+  $(box).addEventListener("click", (e) => {
+    const b = e.target.closest("[data-excl]");
+    if (b) excludeItems(b.dataset.excl.split(" ").filter(Boolean));
+  });
+}

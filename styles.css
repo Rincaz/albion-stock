@@ -126,3 +126,15 @@ textarea:focus { outline: 2px solid var(--gold); outline-offset: -1px; }
 .wipe-actions { display: flex; gap: .5rem; }
 .btn.danger { border-color: var(--out); color: var(--out); }
 .btn.danger:hover { background: var(--out); color: #fff; }
+
+.bar-row.has-x { grid-template-columns: 40px 1fr 32px; }
+.x-btn { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 8px; width: 30px; height: 30px; cursor: pointer; }
+.x-btn:hover { color: #ff7b7b; border-color: #ff7b7b; }
+.chips { display: flex; flex-wrap: wrap; gap: .4rem; margin: .5rem 0; }
+.chip { background: var(--card2); border: 1px solid var(--border); color: var(--muted); border-radius: 999px; padding: .25rem .75rem; cursor: pointer; font-size: .85rem; }
+.chip.active { color: #1a1405; background: var(--gold); border-color: var(--gold); font-weight: 600; }
+.catmin { margin: .5rem 0 .75rem; }
+.catmin summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+.catmin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: .5rem; margin-top: .5rem; }
+.excl-list { list-style: none; padding: 0; margin: 0; }
+.excl-list li { display: grid; grid-template-columns: 40px 1fr auto; gap: .6rem; align-items: center; padding: .4rem 0; border-top: 1px solid var(--border); }

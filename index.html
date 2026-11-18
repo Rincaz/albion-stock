@@ -64,6 +64,7 @@
         <button class="tab" data-tab="inventario">Inventario</button>
         <button class="tab" data-tab="subidas">Subir log</button>
         <button class="tab" data-tab="movimientos">Movimientos</button>
+        <button class="tab" data-tab="excluidos" id="tabExcluidos">Excluidos</button>
         <button class="tab" data-tab="miembros" id="tabMiembros" hidden>Miembros</button>
       </nav>
 
@@ -90,6 +91,12 @@
           <div class="card">
             <h2>⚠️ Faltantes</h2>
             <p class="hint">Bajo el mínimo, o agotados y con uso reciente</p>
+            <div class="chips" id="catChips"></div>
+            <details class="catmin">
+              <summary>Mínimo por tipo</summary>
+              <p class="hint">Un item sin mínimo propio aparece como faltante bajo el mínimo de su tipo. Vacío = usa el general. Compartido por el gremio; solo un admin lo cambia.</p>
+              <div class="catmin-grid" id="catMinInputs"></div>
+            </details>
             <div class="dlg-actions" id="lackExport">
               <button type="button" class="btn" id="lackCsv">Exportar para comprar (CSV)</button>
               <button type="button" class="btn" id="lackCopy">Copiar lista</button>
@@ -168,6 +175,15 @@
           <p class="empty" id="emptyMoves" hidden>Aún no hay movimientos.</p>
         </div>
       </section>
+      <section id="tab-excluidos" hidden>
+        <div class="card">
+          <h2>Items excluidos de tu dashboard</h2>
+          <p class="hint">Solo tú los dejas de ver (en «Más utilizados», «Faltantes» y los contadores). El stock no cambia. Con equivalencias activas, reintegrar uno reintegra todo su grupo.</p>
+          <ul class="excl-list" id="excludedList"></ul>
+          <p class="empty" id="emptyExcluded" hidden>No has excluido ningún item.</p>
+        </div>
+      </section>
+
       <section id="tab-miembros" hidden>
         <div class="card">
           <h2>Crear cuenta con usuario y contraseña</h2>
