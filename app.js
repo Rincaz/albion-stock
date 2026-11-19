@@ -1,10 +1,11 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js";
+import { t, getLang, setLang, locale, applyStatic } from "./i18n.js";
 
 const $ = (s) => document.querySelector(s);
 const IMG = (id, size = 64) =>
   `https://render.albiononline.com/v1/item/${encodeURIComponent(id)}.png?size=${size}`;
-const STATUS_LABEL = { ok: "En stock", low: "Stock bajo", out: "Agotado" };
+const statusLabel = (k) => t({ ok: "En stock", low: "Stock bajo", out: "Agotado" }[k]);
 const LS_GUILD = "albion-stock:guild";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -61,16 +62,18 @@ function catOf(id) {
   if (!m) return "otros";
   return { MAIN: "arma", "2H": "arma", ARMOR: "pecho", HEAD: "casco", SHOES: "zapatos", CAPE: "capa" }[m[1]];
 }
-const catLabel = (c) => CATS.find(([k]) => k === c)?.[1] || "Otros";
+const catLabel = (c) => t(CATS.find(([k]) => k === c)?.[1] || "Otros");
 
 /** Separa un id en base y encantamiento; los recursos encantados usan T4_PLANKS_LEVEL1@1 (base T4_PLANKS). */
 function splitId(id) {
   const [raw, ench] = id.split("@");
   return { base: raw.replace(/_LEVEL\d$/, ""), ench: Number(ench || 0) };
 }
+/** Nombre del item en el idioma activo (español o inglés). */
+const baseName = (base) => (getLang() === "en" ? enMap.get(base) : nameMap.get(base)) || nameMap.get(base) || base;
 function itemName(id) {
   const { base, ench } = splitId(id);
-  const n = nameMap.get(base) || base;
+  const n = baseName(base);
   return ench ? `${n} .${ench}` : n;
 }
 function tierOf(id) {
@@ -155,7 +158,7 @@ async function enter(session) {
     console.error("No se pudo cargar el gremio:", err);
     loadedUid = null;
     show("viewLogin");
-    loginMessage("Sesión iniciada, pero no se pudo cargar tu gremio: " + (err.message || err));
+    loginMessage(t("Sesión iniciada, pero no se pudo cargar tu gremio: ") + (err.message || err));
   } finally {
     entering = false;
   }
@@ -180,10 +183,10 @@ function renderHeader() {
   $("#guildSelect").innerHTML = memberships
     .map((m) => `<option value="${esc(m.guild_id)}" ${m.guild_id === guild.guild_id ? "selected" : ""}>${esc(m.guilds.name)}</option>`)
     .join("");
-  $("#roleChip").textContent = { admin: "Admin", editor: "Editor", viewer: "Solo lectura" }[guild.role] || guild.role;
+  $("#roleChip").textContent = roleLabel(guild.role);
   const inv = $("#inviteChip");
   inv.hidden = guild.role !== "admin";
-  inv.textContent = `Código: ${guild.guilds.invite_code}`;
+  inv.textContent = t("Código: {c}", { c: guild.guilds.invite_code });
   $("#btnMove").hidden = !canEdit();
   $("#uploadCard").hidden = !canEdit();
   $("#btnWipe").hidden = !canEdit();
@@ -200,10 +203,13 @@ $("#guildSelect").addEventListener("change", (e) => {
 
 // ---------- Auth ----------
 let authMode = "login";
+const updateAuthButton = () => { $("#lSubmit").textContent = authMode === "login" ? t("Entrar") : t("Crear cuenta"); };
+const ROLE_LABELS = { admin: "Admin", editor: "Editor", viewer: "Solo lectura" };
+const roleLabel = (r) => t(ROLE_LABELS[r] || r);
 document.querySelectorAll(".seg-btn").forEach((b) => b.addEventListener("click", () => {
   authMode = b.dataset.mode;
   document.querySelectorAll(".seg-btn").forEach((x) => x.classList.toggle("active", x === b));
-  $("#lSubmit").textContent = authMode === "login" ? "Entrar" : "Crear cuenta";
+  updateAuthButton();
   $("#lPass").autocomplete = authMode === "login" ? "current-password" : "new-password";
   $("#lError").hidden = true; $("#lInfo").hidden = true;
 }));
@@ -216,7 +222,7 @@ $("#formLogin").addEventListener("submit", async (e) => {
   $("#lError").hidden = true; $("#lInfo").hidden = true;
   try {
     if (authMode === "signup" && !$("#lEmail").value.includes("@")) {
-      throw new Error("Las cuentas con nombre de usuario las crea un admin desde la pestaña Miembros. Para registrarte tú, usa un correo.");
+      throw new Error(t("Las cuentas con nombre de usuario las crea un admin desde la pestaña Miembros. Para registrarte tú, usa un correo."));
     }
     const creds = { email: loginToEmail($("#lEmail").value), password: $("#lPass").value };
     const { data, error } = authMode === "login"
@@ -224,15 +230,15 @@ $("#formLogin").addEventListener("submit", async (e) => {
       : await supabase.auth.signUp(creds);
     if (error) {
       console.error(error);
-      loginMessage(authMode === "login" ? "Usuario/correo o contraseña incorrectos (o cuenta sin confirmar)." : error.message);
+      loginMessage(authMode === "login" ? t("Usuario/correo o contraseña incorrectos (o cuenta sin confirmar).") : error.message);
     } else if (data.session) {
       await enter(data.session); // no depender solo del evento de auth
     } else {
-      loginMessage("Cuenta creada. Confirma tu correo y luego entra.", false);
+      loginMessage(t("Cuenta creada. Confirma tu correo y luego entra."), false);
     }
   } catch (err) {
     console.error(err);
-    loginMessage("Error inesperado: " + (err.message || err));
+    loginMessage(t("Error inesperado: ") + (err.message || err));
   } finally {
     btn.disabled = false;
   }
@@ -294,7 +300,7 @@ async function refreshAll() {
     uploads = upRows.data;
   } catch (err) {
     console.error("Error cargando stock:", err);
-    return alert("No se pudo cargar el stock: " + err.message);
+    return alert(t("No se pudo cargar el stock: ") + err.message);
   }
   renderCatTiles();
   renderStock();
@@ -363,7 +369,7 @@ function renderStock() {
   const rows = aggregate()
     .filter((e) => !q || norm(e.name).includes(q) || norm(enMap.get(splitId(e.item_id).base)).includes(q) || norm(e.item_id).includes(q))
     .filter((e) => !st || statusOf(e) === st)
-    .sort((a, b) => a.name.localeCompare(b.name, "es"));
+    .sort((a, b) => a.name.localeCompare(b.name, locale()));
   $("#tbodyStock").innerHTML = rows.map((e) => {
     const k = statusOf(e);
     const placesTxt = e.places.some((p) => p.place) ? e.places.map((p) => `${p.place || "—"}: ${p.qty}`).join(" · ") : "";
@@ -372,11 +378,11 @@ function renderStock() {
       <td>${img(e.item_id)}</td>
       <td>${esc(e.name)}</td>
       <td><span class="tier">${esc(tierOf(e.item_id))}</span></td>
-      <td class="num"><strong>${e.total}</strong>${e.eff !== e.total ? `<span class="places">equiv. ${e.eff}</span>` : ""}</td>
-      <td class="num" ${e.minOwn ? "" : `title="Mínimo por defecto"`}>${e.min}${e.minOwn ? "" : "*"}</td>
-      <td><span class="badge ${k}">${STATUS_LABEL[k]}</span></td>
+      <td class="num"><strong>${e.total}</strong>${e.eff !== e.total ? `<span class="places">${t("equiv.")} ${e.eff}</span>` : ""}</td>
+      <td class="num" ${e.minOwn ? "" : `title="${t("Mínimo por defecto")}"`}>${e.min}${e.minOwn ? "" : "*"}</td>
+      <td><span class="badge ${k}">${statusLabel(k)}</span></td>
       <td><span class="places">${esc(placesTxt)}</span>${equivTxt ? `<span class="places">${esc(equivTxt)}</span>` : ""}</td>
-      <td class="actions">${canEdit() ? `<button class="btn sm" data-id="${esc(e.item_id)}">Mover</button>` : ""}</td></tr>`;
+      <td class="actions">${canEdit() ? `<button class="btn sm" data-id="${esc(e.item_id)}">${t("Mover")}</button>` : ""}</td></tr>`;
   }).join("");
   $("#emptyStock").hidden = rows.length > 0;
   $("#placeList").innerHTML = [...new Set(stockRows.map((r) => r.place).filter(Boolean))]
@@ -414,10 +420,10 @@ async function renderDashboard() {
   const low = groupsList.filter((e) => statusOf(e) === "low").length;
   const out = groupsList.filter((e) => statusOf(e) === "out").length;
   $("#kpis").innerHTML = `
-    <div class="kpi"><span>Items distintos</span><strong>${kpiGroups.size}</strong></div>
-    <div class="kpi"><span>Unidades en cofre</span><strong>${units.toLocaleString("es-CL")}</strong></div>
-    <div class="kpi ${low ? "warn" : ""}"><span>Stock bajo</span><strong>${low}</strong></div>
-    <div class="kpi ${out ? "danger" : ""}"><span>Agotados</span><strong>${out}</strong></div>`;
+    <div class="kpi"><span>${t("Items distintos")}</span><strong>${kpiGroups.size}</strong></div>
+    <div class="kpi"><span>${t("Unidades en cofre")}</span><strong>${units.toLocaleString(locale())}</strong></div>
+    <div class="kpi ${low ? "warn" : ""}"><span>${t("Stock bajo")}</span><strong>${low}</strong></div>
+    <div class="kpi ${out ? "danger" : ""}"><span>${t("Agotados")}</span><strong>${out}</strong></div>`;
 
   const days = parseInt($("#period").value, 10);
   const { data, error } = await supabase.rpc("top_used", { p_guild: guild.guild_id, p_days: days, p_limit: 300 });
@@ -448,7 +454,7 @@ async function renderDashboard() {
     if (n > g.usedTop) { g.usedTop = n; if (!byId.has(g.rep)) g.rep = u.item_id; }
     if (!items.length || !byId.has(u.item_id)) g.eff = effOf(u.item_id);
   }
-  const label = (g) => itemName(g.rep) + (g.ids.size > 1 ? ` · ${g.ids.size} equivalentes` : "");
+  const label = (g) => itemName(g.rep) + (g.ids.size > 1 ? " · " + t("{n} equivalentes", { n: g.ids.size }) : "");
 
   const usedGroups = [...groups.values()].filter((g) => g.used > 0).sort((a, b) => b.used - a.used);
   const maxUsed = Math.max(1, ...usedGroups.map((g) => g.used));
@@ -457,12 +463,12 @@ async function renderDashboard() {
         const perDay = g.used / days;
         const cover = perDay > 0 ? Math.floor(g.eff / perDay) : null;
         return `<div class="bar-row has-x">${img(g.rep)}<div class="bar-info">
-          <div class="bar-top"><span>${esc(label(g))}</span><span>${g.used} usados</span></div>
+          <div class="bar-top"><span>${esc(label(g))}</span><span>${t("{n} usados", { n: g.used })}</span></div>
           <div class="bar ${cover !== null && cover < 7 ? "red" : ""}"><i style="width:${(g.used / maxUsed) * 100}%"></i></div>
-          <div class="bar-sub">Stock: ${g.eff} · cobertura ≈ ${cover === null ? "—" : cover + " días"}</div>
+          <div class="bar-sub">${t("Stock: {n} · cobertura ≈ {d}", { n: g.eff, d: cover === null ? "—" : t("{n} días", { n: cover }) })}</div>
         </div>${exclBtn(g)}</div>`;
       }).join("")
-    : '<p class="empty">Sin salidas registradas en este período.</p>';
+    : `<p class="empty">${t("Sin salidas registradas en este período.")}</p>`;
 
   // Faltantes: bajo el mínimo, o agotados con uso reciente (por grupo de equivalencia)
   const lackingAll = [...groups.values()]
@@ -486,14 +492,14 @@ async function renderDashboard() {
     ? shown.map((l) => `<div class="bar-row has-x">${img(l.rep)}<div class="bar-info">
         <div class="bar-top"><span>${esc(l.name)}</span><span>${l.eff}${l.min ? " / " + l.min : ""}</span></div>
         <div class="bar red"><i style="width:${(l.score / maxScore) * 100}%"></i></div>
-        <div class="bar-sub">${l.deficit ? "Faltan " + l.deficit : "Agotado · se usaron " + l.recent + " en " + days + " días"}</div>
+        <div class="bar-sub">${l.deficit ? t("Faltan {n}", { n: l.deficit }) : t("Agotado · se usaron {n} en {d} días", { n: l.recent, d: days })}</div>
       </div>${exclBtn(l)}</div>`).join("") +
       (lacking.length > LACK_PAGE
-        ? `<button type="button" class="btn" id="lackMore">${lackingExpanded ? "Ver menos" : `Ver todos (${lacking.length})`}</button>`
+        ? `<button type="button" class="btn" id="lackMore">${lackingExpanded ? t("Ver menos") : t("Ver todos ({n})", { n: lacking.length })}</button>`
         : "")
-    : `<p class="empty">${catFilter ? "Nada falta en este tipo 🎉" : "Nada falta 🎉"}</p>`;
+    : `<p class="empty">${catFilter ? t("Nada falta en este tipo 🎉") : t("Nada falta 🎉")}</p>`;
 }
-const exclBtn = (g) => `<button type="button" class="x-btn" data-excl="${esc([...g.ids].join(" "))}" title="Excluir del dashboard" aria-label="Excluir del dashboard">✕</button>`;
+const exclBtn = (g) => `<button type="button" class="x-btn" data-excl="${esc([...g.ids].join(" "))}" title="${t("Excluir del dashboard")}" aria-label="${t("Excluir del dashboard")}">✕</button>`;
 let lackingExpanded = false;
 let lastLacking = [], lastDays = 30;
 
@@ -508,13 +514,13 @@ const csvCell = (v) => `"${String(v).replace(/"/g, '""')}"`;
 $("#lackCsv").addEventListener("click", () => {
   const rows = shoppingList();
   if (!rows.length) return;
-  const head = ["Item", "Tipo", "Tier", "ID", "En stock", "Mínimo", "A comprar", `Usados (${lastDays} días)`];
+  const head = [t("Item"), t("Tipo"), t("Tier"), "ID", t("En stock"), t("Mínimo"), t("A comprar"), t("Usados ({n} días)", { n: lastDays })];
   const csv = [head, ...rows.map((r) => [r.name, catLabel(catOf(r.id)), r.tier, r.id, r.have, r.min || "", r.buy, r.used])]
     .map((r) => r.map(csvCell).join(";")).join("\r\n");
   const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `faltantes-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `${t("faltantes")}-${new Date().toISOString().slice(0, 10)}.csv`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -527,12 +533,12 @@ $("#lackCopy").addEventListener("click", async (e) => {
   const btn = e.currentTarget;
   try {
     await navigator.clipboard.writeText(text);
-    btn.textContent = "¡Copiado!";
+    btn.textContent = t("¡Copiado!");
   } catch (err) {
     console.error(err);
-    btn.textContent = "No se pudo copiar";
+    btn.textContent = t("No se pudo copiar");
   }
-  setTimeout(() => { btn.textContent = "Copiar lista"; }, 1800);
+  setTimeout(() => { btn.textContent = t("Copiar lista"); }, 1800);
 });
 $("#lacking").addEventListener("click", (e) => {
   if (!e.target.closest("#lackMore")) return;
@@ -562,7 +568,7 @@ $("#eqInv").addEventListener("change", (e) => setEquiv(e.target.checked));
 $("#eqDash").addEventListener("change", (e) => setEquiv(e.target.checked));
 
 document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
-  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
+  document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === tab));
   ["dashboard", "inventario", "subidas", "movimientos", "excluidos", "miembros"].forEach((n) => ($(`#tab-${n}`).hidden = n !== tab.dataset.tab));
   if (tab.dataset.tab === "miembros") loadMembers();
 }));
@@ -598,14 +604,14 @@ $("#pickSearch").addEventListener("input", () => {
     .slice(0, 30);
   list._found = found;
   list.innerHTML = found.map(([id, es, , en], i) =>
-    `<li tabindex="0" data-i="${i}">${img(id)}<div>${esc(es)}<small>${esc(en)} · ${esc(id)}</small></div></li>`).join("");
+    `<li tabindex="0" data-i="${i}">${img(id)}<div>${esc(getLang() === "en" ? en || es : es)}<small>${esc(getLang() === "en" ? es : en)} · ${esc(id)}</small></div></li>`).join("");
   list.hidden = found.length === 0;
 });
 $("#pickResults").addEventListener("click", (e) => {
   const li = e.target.closest("li");
   if (!li) return;
-  const [id, name, form] = $("#pickResults")._found[Number(li.dataset.i)];
-  setPicked(id, name, form);
+  const [id, , form] = $("#pickResults")._found[Number(li.dataset.i)];
+  setPicked(id, baseName(id), form);
 });
 
 function openMoveDialog(entry) {
@@ -618,7 +624,7 @@ function openMoveDialog(entry) {
     const { base, ench } = splitId(entry.item_id);
     const cat = catalog.find((c) => c[0] === base);
     const form = cat?.[2] || (ench ? (entry.item_id.includes("_LEVEL") ? 2 : 1) : 0);
-    setPicked(base, nameMap.get(base) || base, form, ench);
+    setPicked(base, baseName(base), form, ench);
     $("#pickSearch").value = entry.name;
     $("#mMin").value = entry.minOwn ? entry.min : "";
     $("#mPlace").value = entry.places[0]?.place || "";
@@ -633,10 +639,10 @@ $("#formMove").addEventListener("submit", async (e) => {
   const err = $("#mError");
   const fail = (m) => { err.textContent = m; err.hidden = false; };
   err.hidden = true;
-  if (!picked) return fail("Selecciona un item de la lista.");
+  if (!picked) return fail(t("Selecciona un item de la lista."));
   const qty = parseInt($("#mQty").value, 10);
   const type = $("#mType").value;
-  if (!Number.isInteger(qty) || qty < 0 || (type !== "adjust" && qty === 0)) return fail("Cantidad inválida.");
+  if (!Number.isInteger(qty) || qty < 0 || (type !== "adjust" && qty === 0)) return fail(t("Cantidad inválida."));
   const minRaw = $("#mMin").value;
 
   const btn = $("#btnSubmitMove");
@@ -662,12 +668,12 @@ $("#formMove").addEventListener("submit", async (e) => {
 
 // ---------- Subir el log del cofre ----------
 const LS_PLACE = "albion-stock:place";
-const dtFmt = new Intl.DateTimeFormat("es-CL", { dateStyle: "short", timeStyle: "medium" });
+let dtFmt = new Intl.DateTimeFormat(locale(), { dateStyle: "short", timeStyle: "medium" });
 
 /** "10/29/2026 17:24:26" (M/D/AAAA) -> "2026-10-29 17:24:26". Mismo criterio que la web de regear. */
-function isoDate(t) {
-  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}:\d{2}:\d{2})/.exec(t.trim());
-  return m ? `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")} ${m[4].padStart(8, "0")}` : t.trim().slice(0, 19);
+function isoDate(txt) {
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}:\d{2}:\d{2})/.exec(txt.trim());
+  return m ? `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")} ${m[4].padStart(8, "0")}` : txt.trim().slice(0, 19);
 }
 
 /** Cada línea del log: Fecha, Jugador, Objeto, Encantamiento, Calidad, Cantidad (entre comillas o separadas por tabulación). */
@@ -692,13 +698,13 @@ function parseLog(text) {
 function resolveObject(obj, enchRaw) {
   const e = Math.min(4, Math.max(0, parseInt(enchRaw, 10) || 0));
   const hits = [...(nameIndex.get(norm(obj.trim())) || new Map()).entries()];
-  if (!hits.length) return { error: "no reconocido" };
-  if (hits.length > 1) return { error: `ambiguo (${hits.length} items con ese nombre)` };
+  if (!hits.length) return { error: t("no reconocido") };
+  if (hits.length > 1) return { error: t("ambiguo ({n} items con ese nombre)", { n: hits.length }) };
   const [id, form] = hits[0];
   if (e === 0) return { id };
   if (form === 1) return { id: `${id}@${e}` };
   if (form === 2) return { id: `${id}_LEVEL${e}@${e}` };
-  return { error: `no existe con encantamiento .${e}` };
+  return { error: t("no existe con encantamiento .{e}", { e }) };
 }
 
 async function runImport(dry) {
@@ -716,7 +722,7 @@ async function runImport(dry) {
     }
     rows.push({ sig: r.sig, date: r.date, player: r.player, item: res.id, qty: r.qty });
   }
-  if (!rows.length && !unrecognized && !parsed.bad) throw new Error("Pega primero el log del cofre.");
+  if (!rows.length && !unrecognized && !parsed.bad) throw new Error(t("Pega primero el log del cofre."));
   const since = $("#lgSince").value ? $("#lgSince").value.replace("T", " ") + ":00" : null;
   const { data, error } = await supabase.rpc("stock_import_log", {
     p_guild: guild.guild_id, p_place: $("#lgPlace").value.trim(), p_rows: rows,
@@ -726,26 +732,29 @@ async function runImport(dry) {
   return { plan: data, bad, badLines: parsed.bad, unrecognized };
 }
 
-function renderPlan({ plan, bad, badLines, unrecognized }, done) {
+let lastPlan = null;
+function renderPlan(result, done) {
+  const { plan, bad, badLines, unrecognized } = result;
   const lastTo = uploads[0]?.log_to;
   let html = "";
-  if (done) html += `<p class="lg-ok">✅ Subida registrada el ${esc(dtFmt.format(new Date()))}: ${plan.applied} líneas nuevas aplicadas.</p>`;
-  else if (plan.lines && !plan.applied) html += '<p class="lg-bad">No hay líneas nuevas: todo este registro figura como ya subido (por esta web o por regear). Si borraste el stock y quieres cargarlo otra vez, marca «Volver a cargar líneas ya subidas» y previsualiza de nuevo.</p>';
-  else if (!plan.lines) html += '<p class="lg-bad">No se leyó ninguna línea válida. Revisa que pegaste el log con sus 6 columnas.</p>';
+  lastPlan = { result, done };
+  if (done) html += `<p class="lg-ok">${t("✅ Subida registrada el {fecha}: {n} líneas nuevas aplicadas.", { fecha: esc(dtFmt.format(new Date())), n: plan.applied })}</p>`;
+  else if (plan.lines && !plan.applied) html += `<p class="lg-bad">${t("No hay líneas nuevas: todo este registro figura como ya subido (por esta web o por regear). Si borraste el stock y quieres cargarlo otra vez, marca «Volver a cargar líneas ya subidas» y previsualiza de nuevo.")}</p>`;
+  else if (!plan.lines) html += `<p class="lg-bad">${t("No se leyó ninguna línea válida. Revisa que pegaste el log con sus 6 columnas.")}</p>`;
   if (!done && plan.applied && lastTo && plan.to < lastTo) {
-    html += `<p class="lg-bad">Ojo: el log termina antes de la última subida (${esc(lastTo)}). Revisa que no sea otro registro.</p>`;
+    html += `<p class="lg-bad">${t("Ojo: el log termina antes de la última subida ({fecha}). Revisa que no sea otro registro.", { fecha: esc(lastTo) })}</p>`;
   }
-  html += `<p class="lg-sum"><b>${plan.lines}</b> líneas leídas · <b>${plan.skipped}</b> ya subidas antes · <b>${plan.before}</b> anteriores a «Desde» · <b>${plan.applied}</b> nuevas` +
-    ` · <b>${plan.items_count}</b> items con movimiento neto (+${plan.units_in} / −${plan.units_out})` +
-    `${unrecognized ? ` · <b>${unrecognized}</b> sin reconocer` : ""}${badLines ? ` · ${badLines} ilegibles` : ""}</p>`;
+  html += `<p class="lg-sum">${t("<b>{lines}</b> líneas leídas · <b>{skipped}</b> ya subidas antes · <b>{before}</b> anteriores a «Desde» · <b>{applied}</b> nuevas", plan)}` +
+    t(" · <b>{n}</b> items con movimiento neto (+{in} / −{out})", { n: plan.items_count, in: plan.units_in, out: plan.units_out }) +
+    `${unrecognized ? t(" · <b>{n}</b> sin reconocer", { n: unrecognized }) : ""}${badLines ? t(" · {n} ilegibles", { n: badLines }) : ""}</p>`;
   if (plan.items.length) {
     html += '<ul class="lg-list">' + plan.items.slice(0, 300).map((it) =>
       `<li>${img(it.item)}<span class="lg-n ${it.net > 0 ? "up" : "down"}">${it.net > 0 ? "+" : ""}${it.net}</span> ${esc(itemName(it.item))} <span class="tier">${esc(tierOf(it.item))}</span>` +
-      `${it.net < 0 && it.have + it.net < 0 ? ' <span class="miss">retira más de lo que hay en stock</span>' : ""}</li>`).join("") + "</ul>";
-    if (plan.items.length > 300) html += `<p class="hint">…y ${plan.items.length - 300} items más.</p>`;
+      `${it.net < 0 && it.have + it.net < 0 ? ` <span class="miss">${t("retira más de lo que hay en stock")}</span>` : ""}</li>`).join("") + "</ul>";
+    if (plan.items.length > 300) html += `<p class="hint">${t("…y {n} items más.", { n: plan.items.length - 300 })}</p>`;
   }
   if (bad.size) {
-    html += '<p class="lg-bad">Sin reconocer (no se cargan):</p><ul class="lg-list">' +
+    html += `<p class="lg-bad">${t("Sin reconocer (no se cargan):")}</p><ul class="lg-list">` +
       [...bad.entries()].map(([k, n]) => `<li>${esc(k)} · ${n}</li>`).join("") + "</ul>";
   }
   $("#lgOut").innerHTML = html;
@@ -776,7 +785,7 @@ async function importAction(dry) {
 }
 $("#lgPreview").addEventListener("click", () => importAction(true));
 $("#lgApply").addEventListener("click", () => {
-  if (confirm("¿Aplicar este log al stock del gremio? Quedará registrado con día y hora.")) importAction(false);
+  if (confirm(t("¿Aplicar este log al stock del gremio? Quedará registrado con día y hora."))) importAction(false);
 });
 const lockApply = () => { $("#lgApply").disabled = true; $("#lgApplyHint").hidden = false; };
 $("#lgText").addEventListener("input", lockApply);
@@ -803,12 +812,12 @@ function renderSubidas() {
     <td class="num">${u.items}</td>
     <td class="num mv-in">+${u.units_in}</td><td class="num mv-out">−${u.units_out}</td></tr>`).join("");
   $("#emptyUploads").hidden = uploads.length > 0;
-  const label = { pending: "Pendiente", approved: "Confirmado", rejected: "Rechazado" };
+  const label = { pending: t("Pendiente"), approved: t("Confirmado"), rejected: t("Rechazado") };
   $("#wipeList").innerHTML = wipes.length
-    ? wipes.map((w) => `<li>${esc(dtFmt.format(new Date(w.requested_at)))} · pedido por ${esc(w.requested_name)} · <b>${label[w.status]}</b>` +
-        `${w.resolved_at ? ` por ${esc(w.resolved_name)} (${esc(dtFmt.format(new Date(w.resolved_at)))})` : ""}` +
-        `${w.status === "approved" ? ` · ${w.items_count} items, ${w.units_count} uds.` : ""}</li>`).join("")
-    : '<li class="hint">Sin solicitudes de borrado.</li>';
+    ? wipes.map((w) => `<li>${t("{fecha} · pedido por {quien} · ", { fecha: esc(dtFmt.format(new Date(w.requested_at))), quien: esc(w.requested_name) })}<b>${label[w.status]}</b>` +
+        `${w.resolved_at ? t(" por {quien} ({fecha})", { quien: esc(w.resolved_name), fecha: esc(dtFmt.format(new Date(w.resolved_at))) }) : ""}` +
+        `${w.status === "approved" ? t(" · {n} items, {u} uds.", { n: w.items_count, u: w.units_count }) : ""}</li>`).join("")
+    : `<li class="hint">${t("Sin solicitudes de borrado.")}</li>`;
 }
 
 // ---------- Borrado total con confirmación de un admin ----------
@@ -818,21 +827,22 @@ function renderWipeBanner() {
   if (!pendingWipe) { box.hidden = true; return; }
   const isAdmin = guild.role === "admin";
   box.hidden = false;
-  box.innerHTML = `<div><strong>⚠️ Solicitud de borrado total del stock</strong><br><small>Pedida por ${esc(pendingWipe.requested_name)} el ` +
-    `${esc(dtFmt.format(new Date(pendingWipe.requested_at)))}. ${isAdmin ? "Como admin puedes confirmarla o rechazarla." : "Falta la confirmación de un admin."}</small></div>` +
-    (isAdmin ? '<div class="wipe-actions"><button class="btn danger" id="btnWipeOk">Confirmar borrado</button><button class="btn" id="btnWipeNo">Rechazar</button></div>' : "");
+  box.innerHTML = `<div><strong>${t("⚠️ Solicitud de borrado total del stock")}</strong><br><small>` +
+    t("Pedida por {quien} el {fecha}. ", { quien: esc(pendingWipe.requested_name), fecha: esc(dtFmt.format(new Date(pendingWipe.requested_at))) }) +
+    `${isAdmin ? t("Como admin puedes confirmarla o rechazarla.") : t("Falta la confirmación de un admin.")}</small></div>` +
+    (isAdmin ? `<div class="wipe-actions"><button class="btn danger" id="btnWipeOk">${t("Confirmar borrado")}</button><button class="btn" id="btnWipeNo">${t("Rechazar")}</button></div>` : "");
 }
 $("#wipeBanner").addEventListener("click", async (e) => {
   const ok = e.target.closest("#btnWipeOk");
   const no = e.target.closest("#btnWipeNo");
   if ((!ok && !no) || !pendingWipe) return;
-  if (ok && !confirm("Esto elimina TODO el stock del gremio (queda registrado en Movimientos). ¿Confirmas el borrado?")) return;
+  if (ok && !confirm(t("Esto elimina TODO el stock del gremio (queda registrado en Movimientos). ¿Confirmas el borrado?"))) return;
   const { error } = await supabase.rpc("stock_wipe_resolve", { p_request: pendingWipe.id, p_approve: Boolean(ok) });
   if (error) { console.error(error); return alert(error.message); }
   refreshAll();
 });
 $("#btnWipe").addEventListener("click", async () => {
-  if (!confirm("Vas a solicitar borrar TODO el stock del gremio. No se borra nada hasta que un admin lo confirme. ¿Enviar la solicitud?")) return;
+  if (!confirm(t("Vas a solicitar borrar TODO el stock del gremio. No se borra nada hasta que un admin lo confirme. ¿Enviar la solicitud?"))) return;
   const { error } = await supabase.rpc("stock_wipe_request", { p_guild: guild.guild_id });
   if (error) { console.error(error); return alert(error.message); }
   refreshAll();
@@ -844,18 +854,17 @@ init();
 // Un usuario sin "@" (p. ej. "shankgos") se guarda internamente como shankgos@ignum.invalid (dominio reservado, nunca recibe correo)
 const USER_DOMAIN = "ignum.invalid";
 function loginToEmail(v) {
-  const t = String(v || "").trim().toLowerCase();
-  if (t.includes("@")) return t;
-  if (!/^[a-z0-9._-]{3,30}$/.test(t)) {
-    throw new Error("El usuario debe tener 3–30 caracteres: letras, números, punto, guion o guion bajo (sin espacios ni tildes).");
+  const val = String(v || "").trim().toLowerCase();
+  if (val.includes("@")) return val;
+  if (!/^[a-z0-9._-]{3,30}$/.test(val)) {
+    throw new Error(t("El usuario debe tener 3–30 caracteres: letras, números, punto, guion o guion bajo (sin espacios ni tildes)."));
   }
-  return `${t}@${USER_DOMAIN}`;
+  return `${val}@${USER_DOMAIN}`;
 }
 const emailToLogin = (e) => (e && e.endsWith(`@${USER_DOMAIN}`) ? e.slice(0, -USER_DOMAIN.length - 1) : e || "—");
 
 // ---------- Panel de miembros (solo admin) ----------
-const ROLE_LABEL = { admin: "Admin", editor: "Editor", viewer: "Solo lectura" };
-const roleOptions = (sel) => Object.entries(ROLE_LABEL).map(([v, l]) => `<option value="${v}" ${v === sel ? "selected" : ""}>${l}</option>`).join("");
+const roleOptions = (sel) => Object.keys(ROLE_LABELS).map((v) => `<option value="${v}" ${v === sel ? "selected" : ""}>${roleLabel(v)}</option>`).join("");
 
 async function loadMembers() {
   if (guild.role !== "admin") return;
@@ -866,14 +875,14 @@ async function loadMembers() {
     return;
   }
   $("#tbodyMembers").innerHTML = data.members.map((m) => `<tr>
-    <td>${esc(m.display_name || "Sin nombre")}${m.is_self ? ' <span class="tier">tú</span>' : ""}</td>
+    <td>${esc(m.display_name || t("Sin nombre"))}${m.is_self ? ` <span class="tier">${t("tú")}</span>` : ""}</td>
     <td>${esc(emailToLogin(m.email))}</td>
-    <td>${m.is_self ? ROLE_LABEL[m.role] : `<select data-role-for="${esc(m.user_id)}">${roleOptions(m.role)}</select>`}</td>
-    <td>${m.is_self ? "" : `<button class="btn" data-remove="${esc(m.user_id)}" data-name="${esc(m.display_name || m.email)}">Quitar</button>`}</td></tr>`).join("");
+    <td>${m.is_self ? roleLabel(m.role) : `<select data-role-for="${esc(m.user_id)}">${roleOptions(m.role)}</select>`}</td>
+    <td>${m.is_self ? "" : `<button class="btn" data-remove="${esc(m.user_id)}" data-name="${esc(m.display_name || m.email)}">${t("Quitar")}</button>`}</td></tr>`).join("");
   $("#pendingList").innerHTML = data.pending.length
-    ? data.pending.map((p) => `<li>${esc(p.display_name || "Sin nombre")} · ${esc(emailToLogin(p.email))} · ${ROLE_LABEL[p.role]} ` +
-        `<button class="btn" data-cancel="${esc(p.email)}">Cancelar</button></li>`).join("")
-    : '<li class="hint">Sin invitaciones pendientes.</li>';
+    ? data.pending.map((p) => `<li>${esc(p.display_name || t("Sin nombre"))} · ${esc(emailToLogin(p.email))} · ${roleLabel(p.role)} ` +
+        `<button class="btn" data-cancel="${esc(p.email)}">${t("Cancelar")}</button></li>`).join("")
+    : `<li class="hint">${t("Sin invitaciones pendientes.")}</li>`;
 }
 
 $("#formAddMember").addEventListener("submit", async (e) => {
@@ -886,7 +895,7 @@ $("#formAddMember").addEventListener("submit", async (e) => {
       p_guild: guild.guild_id, p_email: loginToEmail($("#amEmail").value), p_display: $("#amName").value, p_role: $("#amRole").value,
     });
     if (error) throw error;
-    ok.textContent = data === "added" ? "Agregado al gremio." : "Invitación guardada: se unirá cuando se registre con ese correo.";
+    ok.textContent = data === "added" ? t("Agregado al gremio.") : t("Invitación guardada: se unirá cuando se registre con ese correo.");
     ok.hidden = false;
     $("#formAddMember").reset();
     await loadMembers();
@@ -911,7 +920,7 @@ $("#formCreateUser").addEventListener("submit", async (e) => {
       p_display: $("#cuName").value, p_role: $("#cuRole").value,
     });
     if (error) throw error;
-    ok.textContent = `Cuenta «${username}» creada y agregada al gremio. Pásale el usuario y la contraseña.`;
+    ok.textContent = t("Cuenta «{u}» creada y agregada al gremio. Pásale el usuario y la contraseña.", { u: username });
     ok.hidden = false;
     $("#formCreateUser").reset();
     await loadMembers();
@@ -938,7 +947,7 @@ $("#tab-miembros").addEventListener("click", async (e) => {
   const cancel = e.target.closest("[data-cancel]");
   try {
     if (rm) {
-      if (!confirm(`¿Quitar a ${rm.dataset.name} del gremio?`)) return;
+      if (!confirm(t("¿Quitar a {n} del gremio?", { n: rm.dataset.name }))) return;
       const { error } = await supabase.from("guild_members").delete()
         .eq("guild_id", guild.guild_id).eq("user_id", rm.dataset.remove);
       if (error) throw error;
@@ -955,7 +964,7 @@ $("#tab-miembros").addEventListener("click", async (e) => {
 });
 
 $("#btnRotate").addEventListener("click", async () => {
-  if (!confirm("El código anterior dejará de funcionar. ¿Generar uno nuevo?")) return;
+  if (!confirm(t("El código anterior dejará de funcionar. ¿Generar uno nuevo?"))) return;
   const { data, error } = await supabase.rpc("rotate_invite", { p_guild: guild.guild_id });
   if (error) { console.error(error); return alert(error.message); }
   guild.guilds.invite_code = data;
@@ -968,24 +977,25 @@ let lackCounts = {};
 
 function renderCatTiles() {
   const isAdmin = guild?.role === "admin";
-  $("#catTiles").innerHTML = [["", "Todos · general"], ...CATS].map(([k, l]) => {
+  $("#catTiles").innerHTML = [["", "Todos · general"], ...CATS].map(([k, lbl]) => {
+    const l = t(lbl);
     const own = k ? catMin[k] : defaultMin;
     const n = lackCounts[k];
     return `<div class="cat-tile ${catFilter === k ? "active" : ""}" data-cat="${k}" role="button" tabindex="0" aria-pressed="${catFilter === k}">
       <div class="cat-head"><span class="cat-ico">${CAT_ICON[k]}</span><span class="cat-name">${l}</span>
         ${n === undefined ? "" : `<span class="cat-count ${n ? "has" : ""}">${n}</span>`}</div>
-      <label class="cat-min">menos de
-        <input type="number" min="0" max="99999" step="1" data-catmin="${k}" value="${own ?? ""}" placeholder="${k ? defaultMin : 8}" ${isAdmin ? "" : "disabled"} aria-label="Mínimo ${l}" />
-        <span>uds.</span></label>
-      <div class="cat-sub">${k ? (catMin[k] === undefined ? "usa el general" : "propio del tipo") : "para tipos sin valor propio"}</div>
+      <label class="cat-min">${t("menos de")}
+        <input type="number" min="0" max="99999" step="1" data-catmin="${k}" value="${own ?? ""}" placeholder="${k ? defaultMin : 8}" ${isAdmin ? "" : "disabled"} aria-label="${t("Mínimo {tipo}", { tipo: l })}" />
+        <span>${t("uds.")}</span></label>
+      <div class="cat-sub">${k ? (catMin[k] === undefined ? t("usa el general") : t("propio del tipo")) : t("para tipos sin valor propio")}</div>
     </div>`;
   }).join("");
 }
 $("#catTiles").addEventListener("click", (e) => {
   if (e.target.closest("input")) return; // editar el valor no cambia el filtro
-  const t = e.target.closest("[data-cat]");
-  if (!t) return;
-  catFilter = t.dataset.cat;
+  const tile = e.target.closest("[data-cat]");
+  if (!tile) return;
+  catFilter = tile.dataset.cat;
   lackingExpanded = false;
   renderDashboard();
 });
@@ -1011,7 +1021,7 @@ $("#catTiles").addEventListener("change", async (e) => {
   const { error } = await supabase.from("stock_settings").upsert(row, { onConflict: "guild_id" });
   if (error) {
     console.error(error);
-    alert("No se pudo guardar: " + error.message);
+    alert(t("No se pudo guardar: ") + error.message);
   } else {
     defaultMin = nextDefault;
     catMin = nextCat;
@@ -1027,7 +1037,7 @@ async function excludeItems(ids) {
   if (!rows.length) return;
   const { error } = await supabase.from("stock_dashboard_exclusions")
     .upsert(rows, { onConflict: "guild_id,user_id,item_id", ignoreDuplicates: true });
-  if (error) { console.error(error); return alert("No se pudo excluir: " + error.message); }
+  if (error) { console.error(error); return alert(t("No se pudo excluir: ") + error.message); }
   rows.forEach((r) => excluded.add(r.item_id));
   rebuildExcludedKeys();
   renderDashboard();
@@ -1039,18 +1049,18 @@ async function reintegrateItem(id) {
   const ids = [...excluded].filter((x) => x === id || (k && equivKey(x) === k));
   const { error } = await supabase.from("stock_dashboard_exclusions").delete()
     .eq("guild_id", guild.guild_id).in("item_id", ids);
-  if (error) { console.error(error); return alert("No se pudo reintegrar: " + error.message); }
+  if (error) { console.error(error); return alert(t("No se pudo reintegrar: ") + error.message); }
   ids.forEach((x) => excluded.delete(x));
   rebuildExcludedKeys();
   renderDashboard();
   renderExcluded();
 }
 function renderExcluded() {
-  const list = [...excluded].sort((a, b) => itemName(a).localeCompare(itemName(b), "es"));
-  $("#tabExcluidos").textContent = list.length ? `Excluidos (${list.length})` : "Excluidos";
+  const list = [...excluded].sort((a, b) => itemName(a).localeCompare(itemName(b), locale()));
+  $("#tabExcluidos").textContent = list.length ? t("Excluidos ({n})", { n: list.length }) : t("Excluidos");
   $("#excludedList").innerHTML = list.map((id) => `<li>${img(id)} <span>${esc(itemName(id))} <span class="tier">${esc(tierOf(id))}</span>
     <span class="hint">· ${esc(catLabel(catOf(id)))}</span></span>
-    <button type="button" class="btn" data-reint="${esc(id)}">Reintegrar</button></li>`).join("");
+    <button type="button" class="btn" data-reint="${esc(id)}">${t("Reintegrar")}</button></li>`).join("");
   $("#emptyExcluded").hidden = list.length > 0;
 }
 $("#excludedList").addEventListener("click", (e) => {
@@ -1063,3 +1073,27 @@ for (const box of ["#topUsed", "#lacking"]) {
     if (b) excludeItems(b.dataset.excl.split(" ").filter(Boolean));
   });
 }
+
+// ---------- Idioma ----------
+function refreshLanguage() {
+  dtFmt = new Intl.DateTimeFormat(locale(), { dateStyle: "short", timeStyle: "medium" });
+  applyStatic();
+  updateAuthButton();
+  if (!guild) return;
+  renderHeader();
+  renderCatTiles();
+  renderStock();
+  renderDashboard();
+  renderSubidas();
+  renderWipeBanner();
+  renderExcluded();
+  loadMoves();
+  if (lastPlan) renderPlan(lastPlan.result, lastPlan.done);
+  if (!$("#tab-miembros").hidden) loadMembers();
+}
+document.querySelectorAll("#langSwitch button").forEach((b) => b.addEventListener("click", () => {
+  if (b.dataset.lang === getLang()) return;
+  setLang(b.dataset.lang);
+  refreshLanguage();
+}));
+refreshLanguage();
